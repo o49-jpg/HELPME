@@ -3192,10 +3192,23 @@ do
 end
 
 -- ============================================================================
--- TAB: MEDIA (Music/Video Player with Custom Files)
+-- TAB: MEDIA (Revamped — Full Video Player + Audio + Downloads)
 -- ============================================================================
 do
     local page = tabPages["Media"]
+
+    -- ============================================================================
+    -- HTTP REQUEST HANDLER
+    -- ============================================================================
+    local function getHttpRequest()
+        if syn and syn.request then return syn.request
+        elseif http and http.request then return http.request
+        elseif http_request then return http_request
+        elseif fluxus and fluxus.request then return fluxus.request
+        elseif request then return request
+        else return nil end
+    end
+    local httpRequestFunc = getHttpRequest()
 
     -- ============================================================================
     -- STATE
@@ -3203,15 +3216,51 @@ do
     local mediaFolder = "TerminalMedia"
     local currentlyPlaying = nil
     local currentSound = nil
+    local currentVideoFrame = nil
     local discSpinning = false
     local discRotation = 0
+    local loopEnabled = false
+    local currentVolume = 0.7
+    local videoPlaying = false
+    local videoHistory = {}
+    local audioHistory = {}
 
-    -- Ensure media folder exists
+    -- Ensure folders
     pcall(function()
-        if makefolder and not isfolder(mediaFolder) then
-            makefolder(mediaFolder)
+        if makefolder then
+            if not isfolder(mediaFolder) then makefolder(mediaFolder) end
+            if not isfolder(mediaFolder .. "/Videos") then makefolder(mediaFolder .. "/Videos") end
+            if not isfolder(mediaFolder .. "/Audio") then makefolder(mediaFolder .. "/Audio") end
         end
     end)
+
+    -- ============================================================================
+    -- HELPER: Extract filename from URL
+    -- ============================================================================
+    local function extractFileName(url)
+        local parts = url:split("/")
+        local filePart = parts[#parts] or "video.mp4"
+        filePart = filePart:split("?")[1] or filePart
+        return filePart
+    end
+
+    -- ============================================================================
+    -- HELPER: Format time
+    -- ============================================================================
+    local function formatTime(seconds)
+        local min = math.floor(seconds / 60)
+        local sec = math.floor(seconds % 60)
+        return string.format("%d:%02d", min, sec)
+    end
+
+    -- ============================================================================
+    -- HELPER: Format file size
+    -- ============================================================================
+    local function formatSize(bytes)
+        if bytes < 1024 then return bytes .. "B"
+        elseif bytes < 1024 * 1024 then return string.format("%.1fKB", bytes / 1024)
+        else return string.format("%.2fMB", bytes / (1024 * 1024)) end
+    end
 
     -- ============================================================================
     -- HELPER: Collapsible section
@@ -3253,6 +3302,7 @@ do
         headerBtn.MouseButton1Click:Connect(function()
             isOpen = not isOpen; content.Visible = isOpen
             headerBtn.Text = (isOpen and "▼ " or "▶ ") .. titleText
+            TweenService:Create(hStroke, TweenInfo.new(0.2), {Color = isOpen and Colors.Red_Primary or Colors.Red_Dim}):Play()
         end)
         headerBtn.MouseEnter:Connect(function() TweenService:Create(headerBtn, TweenInfo.new(0.15), {BackgroundTransparency = 0.05}):Play() end)
         headerBtn.MouseLeave:Connect(function() TweenService:Create(headerBtn, TweenInfo.new(0.15), {BackgroundTransparency = 0.2}):Play() end)
@@ -3260,204 +3310,95 @@ do
     end
 
     -- ============================================================================
-    -- DISC VISUALIZER (Floating overlay)
-    -- ============================================================================
-    local discOverlay = Instance.new("Frame", gui)
-    discOverlay.Name = "DiscVisualizer"
-    discOverlay.Size = UDim2.new(0, math.floor(200 * SF), 0, math.floor(240 * SF))
-    discOverlay.Position = UDim2.new(1, -(math.floor(220 * SF)), 1, -(math.floor(260 * SF)))
-    discOverlay.BackgroundColor3 = Colors.Gunmetal_Dark
-    discOverlay.BackgroundTransparency = 0.15
-    discOverlay.BorderSizePixel = 0
-    discOverlay.Visible = false
-    discOverlay.ZIndex = 20
-    Instance.new("UICorner", discOverlay).CornerRadius = UDim.new(0, math.floor(12 * SF))
-    local discStroke = Instance.new("UIStroke", discOverlay)
-    discStroke.Color = Colors.Red_Primary; discStroke.Thickness = 2; discStroke.Transparency = 0.3
-
-    -- Disc header (draggable)
-    local discHeader = Instance.new("TextLabel", discOverlay)
-    discHeader.Size = UDim2.new(1, 0, 0, math.floor(20 * SF))
-    discHeader.Text = "♫ NOW PLAYING"
-    discHeader.TextColor3 = Colors.Red_Primary; discHeader.BackgroundColor3 = Colors.Gunmetal_Mid
-    discHeader.BackgroundTransparency = 0.3; discHeader.Font = Enum.Font.GothamBold
-    discHeader.TextSize = math.floor(9 * SF); discHeader.BorderSizePixel = 0
-
-    -- Drag disc overlay
-    local discDragging = false
-    local discDragStart, discStartPos
-    discHeader.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-            discDragging = true; discDragStart = input.Position; discStartPos = discOverlay.Position
-        end
-    end)
-    UserInputService.InputChanged:Connect(function(input)
-        if discDragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
-            local delta = input.Position - discDragStart
-            discOverlay.Position = UDim2.new(discStartPos.X.Scale, discStartPos.X.Offset + delta.X, discStartPos.Y.Scale, discStartPos.Y.Offset + delta.Y)
-        end
-    end)
-    UserInputService.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then discDragging = false end
-    end)
-
-    -- Disc circle
-    local discSize = math.floor(140 * SF)
-    local discFrame = Instance.new("Frame", discOverlay)
-    discFrame.Size = UDim2.new(0, discSize, 0, discSize)
-    discFrame.Position = UDim2.new(0.5, -discSize/2, 0, math.floor(28 * SF))
-    discFrame.BackgroundColor3 = Colors.Gunmetal_Dark
-    discFrame.BorderSizePixel = 0
-    Instance.new("UICorner", discFrame).CornerRadius = UDim.new(1, 0)
-    local discBorderStroke = Instance.new("UIStroke", discFrame)
-    discBorderStroke.Color = Colors.Red_Primary; discBorderStroke.Thickness = 3
-
-    -- Inner disc ring 1
-    local innerRing1 = Instance.new("Frame", discFrame)
-    local ir1Size = math.floor(100 * SF)
-    innerRing1.Size = UDim2.new(0, ir1Size, 0, ir1Size)
-    innerRing1.Position = UDim2.new(0.5, -ir1Size/2, 0.5, -ir1Size/2)
-    innerRing1.BackgroundColor3 = Colors.Gunmetal_Mid
-    innerRing1.BorderSizePixel = 0
-    Instance.new("UICorner", innerRing1).CornerRadius = UDim.new(1, 0)
-    Instance.new("UIStroke", innerRing1).Color = Colors.Red_Dim
-
-    -- Inner disc ring 2
-    local innerRing2 = Instance.new("Frame", discFrame)
-    local ir2Size = math.floor(60 * SF)
-    innerRing2.Size = UDim2.new(0, ir2Size, 0, ir2Size)
-    innerRing2.Position = UDim2.new(0.5, -ir2Size/2, 0.5, -ir2Size/2)
-    innerRing2.BackgroundColor3 = Colors.Red_Deep
-    innerRing2.BorderSizePixel = 0
-    Instance.new("UICorner", innerRing2).CornerRadius = UDim.new(1, 0)
-    Instance.new("UIStroke", innerRing2).Color = Colors.Red_Primary
-
-    -- Center hole
-    local centerHole = Instance.new("Frame", discFrame)
-    local chSize = math.floor(16 * SF)
-    centerHole.Size = UDim2.new(0, chSize, 0, chSize)
-    centerHole.Position = UDim2.new(0.5, -chSize/2, 0.5, -chSize/2)
-    centerHole.BackgroundColor3 = Colors.Gunmetal_Dark
-    centerHole.BorderSizePixel = 0
-    Instance.new("UICorner", centerHole).CornerRadius = UDim.new(1, 0)
-
-    -- Disc label (center)
-    local discLabel = Instance.new("TextLabel", innerRing2)
-    discLabel.Size = UDim2.new(0.9, 0, 0.4, 0)
-    discLabel.Position = UDim2.new(0.05, 0, 0.15, 0)
-    discLabel.Text = "♫"
-    discLabel.TextColor3 = Colors.Red_Primary; discLabel.BackgroundTransparency = 1
-    discLabel.Font = Enum.Font.GothamBold; discLabel.TextSize = math.floor(14 * SF)
-    discLabel.TextScaled = true
-
-    -- Song name label
-    local songNameLabel = Instance.new("TextLabel", discOverlay)
-    songNameLabel.Size = UDim2.new(1, -math.floor(12 * SF), 0, math.floor(16 * SF))
-    songNameLabel.Position = UDim2.new(0, math.floor(6 * SF), 1, -(math.floor(38 * SF)))
-    songNameLabel.Text = "No track loaded"
-    songNameLabel.TextColor3 = Colors.Red_Dim; songNameLabel.BackgroundTransparency = 1
-    songNameLabel.Font = Enum.Font.GothamBold; songNameLabel.TextSize = math.floor(9 * SF)
-    songNameLabel.TextWrapped = true; songNameLabel.TextTruncate = Enum.TextTruncate.AtEnd
-
-    -- Progress label
-    local progressLabel = Instance.new("TextLabel", discOverlay)
-    progressLabel.Size = UDim2.new(1, -math.floor(12 * SF), 0, math.floor(14 * SF))
-    progressLabel.Position = UDim2.new(0, math.floor(6 * SF), 1, -(math.floor(20 * SF)))
-    progressLabel.Text = "0:00 / 0:00"
-    progressLabel.TextColor3 = Colors.Gunmetal_Accent; progressLabel.BackgroundTransparency = 1
-    progressLabel.Font = Enum.Font.Code; progressLabel.TextSize = math.floor(8 * SF)
-
-    -- Spinning animation
-    local discSpinConn = nil
-    local function startDiscSpin()
-        if discSpinConn then return end
-        discSpinning = true
-        discSpinConn = RunService.Heartbeat:Connect(function(dt)
-            if not discSpinning then return end
-            discRotation = discRotation + dt * 60 -- degrees per second
-            if discRotation > 360 then discRotation = discRotation - 360 end
-            discFrame.Rotation = discRotation
-
-            -- Pulse the border
-            discBorderStroke.Color = Color3.fromRGB(
-                255,
-                math.floor(20 + math.sin(tick() * 2) * 20),
-                math.floor(30 + math.sin(tick() * 2) * 15)
-            )
-
-            -- Update progress
-            if currentSound and currentSound.Parent then
-                local pos = currentSound.TimePosition
-                local dur = currentSound.TimeLength
-                local posMin = math.floor(pos / 60)
-                local posSec = math.floor(pos % 60)
-                local durMin = math.floor(dur / 60)
-                local durSec = math.floor(dur % 60)
-                progressLabel.Text = string.format("%d:%02d / %d:%02d", posMin, posSec, durMin, durSec)
-            end
-        end)
-    end
-
-    local function stopDiscSpin()
-        discSpinning = false
-        if discSpinConn then discSpinConn:Disconnect(); discSpinConn = nil end
-    end
-
-    -- ============================================================================
-    -- VIDEO OVERLAY (Full screen)
+    -- FLOATING VIDEO PLAYER (Draggable, Resizable, Full Controls)
     -- ============================================================================
     local videoOverlay = Instance.new("Frame", gui)
-    videoOverlay.Name = "VideoPlayer"
-    videoOverlay.Size = UDim2.new(0, math.floor(400 * SF), 0, math.floor(260 * SF))
-    videoOverlay.Position = UDim2.new(0.5, -math.floor(200 * SF), 0.5, -math.floor(130 * SF))
+    videoOverlay.Name = "VideoPlayerOverlay"
+    videoOverlay.Size = UDim2.new(0, math.floor(420 * SF), 0, math.floor(310 * SF))
+    videoOverlay.Position = UDim2.new(0.5, -math.floor(210 * SF), 0.5, -math.floor(155 * SF))
     videoOverlay.BackgroundColor3 = Colors.Gunmetal_Dark
     videoOverlay.BackgroundTransparency = 0.05
     videoOverlay.BorderSizePixel = 0
     videoOverlay.Visible = false
     videoOverlay.ZIndex = 25
+    videoOverlay.ClipsDescendants = true
     Instance.new("UICorner", videoOverlay).CornerRadius = UDim.new(0, math.floor(12 * SF))
-    local videoStroke = Instance.new("UIStroke", videoOverlay)
-    videoStroke.Color = Colors.Red_Primary; videoStroke.Thickness = 2
+    local videoOverlayStroke = Instance.new("UIStroke", videoOverlay)
+    videoOverlayStroke.Color = Colors.Red_Primary; videoOverlayStroke.Thickness = 2; videoOverlayStroke.Transparency = 0.2
 
-    -- Video header
-    local videoHeader = Instance.new("Frame", videoOverlay)
-    videoHeader.Size = UDim2.new(1, 0, 0, math.floor(24 * SF))
-    videoHeader.BackgroundColor3 = Colors.Gunmetal_Mid; videoHeader.BackgroundTransparency = 0.2
-    videoHeader.BorderSizePixel = 0
+    -- Video header bar
+    local videoHeaderBar = Instance.new("Frame", videoOverlay)
+    videoHeaderBar.Size = UDim2.new(1, 0, 0, math.floor(28 * SF))
+    videoHeaderBar.BackgroundColor3 = Colors.Gunmetal_Mid; videoHeaderBar.BackgroundTransparency = 0.15
+    videoHeaderBar.BorderSizePixel = 0; videoHeaderBar.ZIndex = 26
 
-    local videoTitle = Instance.new("TextLabel", videoHeader)
-    videoTitle.Size = UDim2.new(0.8, 0, 1, 0); videoTitle.Position = UDim2.new(0, math.floor(8 * SF), 0, 0)
-    videoTitle.Text = "▶ VIDEO PLAYER"; videoTitle.TextColor3 = Colors.Red_Primary
-    videoTitle.BackgroundTransparency = 1; videoTitle.Font = Enum.Font.GothamBold
-    videoTitle.TextSize = math.floor(10 * SF); videoTitle.TextXAlignment = Enum.TextXAlignment.Left
+    local videoTitleLabel = Instance.new("TextLabel", videoHeaderBar)
+    videoTitleLabel.Size = UDim2.new(0.7, 0, 1, 0)
+    videoTitleLabel.Position = UDim2.new(0, math.floor(10 * SF), 0, 0)
+    videoTitleLabel.Text = "🎬 VIDEO PLAYER"
+    videoTitleLabel.TextColor3 = Colors.Red_Primary; videoTitleLabel.BackgroundTransparency = 1
+    videoTitleLabel.Font = Enum.Font.GothamBold; videoTitleLabel.TextSize = math.floor(10 * SF)
+    videoTitleLabel.TextXAlignment = Enum.TextXAlignment.Left; videoTitleLabel.ZIndex = 27
 
-    local videoCloseBtn = Instance.new("TextButton", videoHeader)
-    videoCloseBtn.Size = UDim2.new(0, math.floor(24 * SF), 0, math.floor(24 * SF))
-    videoCloseBtn.Position = UDim2.new(1, -(math.floor(28 * SF)), 0, 0)
+    -- Download progress label
+    local videoDownloadLabel = Instance.new("TextLabel", videoHeaderBar)
+    videoDownloadLabel.Size = UDim2.new(0.3, -math.floor(40 * SF), 1, 0)
+    videoDownloadLabel.Position = UDim2.new(0.5, 0, 0, 0)
+    videoDownloadLabel.Text = ""
+    videoDownloadLabel.TextColor3 = Colors.Red_Dim; videoDownloadLabel.BackgroundTransparency = 1
+    videoDownloadLabel.Font = Enum.Font.Code; videoDownloadLabel.TextSize = math.floor(8 * SF)
+    videoDownloadLabel.TextXAlignment = Enum.TextXAlignment.Right; videoDownloadLabel.ZIndex = 27
+
+    -- Close button
+    local videoCloseBtnSize = math.floor(24 * SF)
+    local videoCloseBtn = Instance.new("TextButton", videoHeaderBar)
+    videoCloseBtn.Size = UDim2.new(0, videoCloseBtnSize, 0, videoCloseBtnSize)
+    videoCloseBtn.Position = UDim2.new(1, -(videoCloseBtnSize + math.floor(4 * SF)), 0, math.floor(2 * SF))
     videoCloseBtn.Text = "✕"; videoCloseBtn.TextColor3 = Colors.Red_Primary
     videoCloseBtn.BackgroundColor3 = Colors.Gunmetal_Light; videoCloseBtn.BackgroundTransparency = 0.5
     videoCloseBtn.Font = Enum.Font.GothamBold; videoCloseBtn.TextSize = math.floor(12 * SF)
-    videoCloseBtn.BorderSizePixel = 0
+    videoCloseBtn.BorderSizePixel = 0; videoCloseBtn.ZIndex = 28
     Instance.new("UICorner", videoCloseBtn).CornerRadius = UDim.new(0, 4)
 
     videoCloseBtn.MouseButton1Click:Connect(function()
         videoOverlay.Visible = false
+        if currentVideoFrame then
+            currentVideoFrame.Playing = false
+        end
+        videoPlaying = false
+        addLog("Video player closed", false)
     end)
 
-    -- Video frame area
-    local videoFrame = Instance.new("VideoFrame", videoOverlay)
-    videoFrame.Size = UDim2.new(1, -math.floor(8 * SF), 1, -(math.floor(32 * SF)))
-    videoFrame.Position = UDim2.new(0, math.floor(4 * SF), 0, math.floor(28 * SF))
-    videoFrame.BackgroundColor3 = Color3.new(0, 0, 0)
-    videoFrame.BorderSizePixel = 0
-    videoFrame.Looped = false
-    videoFrame.Playing = false
-    Instance.new("UICorner", videoFrame).CornerRadius = UDim.new(0, math.floor(8 * SF))
+    -- Minimize button
+    local videoMinBtn = Instance.new("TextButton", videoHeaderBar)
+    videoMinBtn.Size = UDim2.new(0, videoCloseBtnSize, 0, videoCloseBtnSize)
+    videoMinBtn.Position = UDim2.new(1, -(videoCloseBtnSize * 2 + math.floor(8 * SF)), 0, math.floor(2 * SF))
+    videoMinBtn.Text = "—"; videoMinBtn.TextColor3 = Colors.Red_Dim
+    videoMinBtn.BackgroundColor3 = Colors.Gunmetal_Light; videoMinBtn.BackgroundTransparency = 0.5
+    videoMinBtn.Font = Enum.Font.GothamBold; videoMinBtn.TextSize = math.floor(12 * SF)
+    videoMinBtn.BorderSizePixel = 0; videoMinBtn.ZIndex = 28
+    Instance.new("UICorner", videoMinBtn).CornerRadius = UDim.new(0, 4)
+
+    local videoMinimized = false
+    local videoOrigSize = videoOverlay.Size
+
+    videoMinBtn.MouseButton1Click:Connect(function()
+        videoMinimized = not videoMinimized
+        if videoMinimized then
+            TweenService:Create(videoOverlay, TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.In), {
+                Size = UDim2.new(0, math.floor(200 * SF), 0, math.floor(28 * SF))
+            }):Play()
+        else
+            TweenService:Create(videoOverlay, TweenInfo.new(0.3, Enum.EasingStyle.Back), {
+                Size = videoOrigSize
+            }):Play()
+        end
+    end)
 
     -- Drag video overlay
     local videoDragging = false
     local videoDragStart, videoStartPos
-    videoHeader.InputBegan:Connect(function(input)
+    videoHeaderBar.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
             videoDragging = true; videoDragStart = input.Position; videoStartPos = videoOverlay.Position
         end
@@ -3472,78 +3413,680 @@ do
         if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then videoDragging = false end
     end)
 
-    -- ============================================================================
-    -- SECTION 1: ROBLOX AUDIO PLAYER
-    -- ============================================================================
-    local audioContent = createMediaCollapsible(page, "🎵 ROBLOX AUDIO PLAYER", 1, true)
+    -- Video frame (the actual video display)
+    local videoDisplay = Instance.new("VideoFrame", videoOverlay)
+    videoDisplay.Name = "VideoDisplay"
+    videoDisplay.Size = UDim2.new(1, -math.floor(8 * SF), 1, -(math.floor(78 * SF)))
+    videoDisplay.Position = UDim2.new(0, math.floor(4 * SF), 0, math.floor(30 * SF))
+    videoDisplay.BackgroundColor3 = Color3.new(0, 0, 0)
+    videoDisplay.BorderSizePixel = 0
+    videoDisplay.Looped = false
+    videoDisplay.Playing = false
+    videoDisplay.Volume = 0.7
+    videoDisplay.ZIndex = 26
+    Instance.new("UICorner", videoDisplay).CornerRadius = UDim.new(0, math.floor(8 * SF))
+    currentVideoFrame = videoDisplay
 
-    local nowPlayingFrame = Instance.new("Frame", audioContent)
-    nowPlayingFrame.Size = UDim2.new(1, 0, 0, math.floor(50 * SF))
-    nowPlayingFrame.LayoutOrder = 1
-    nowPlayingFrame.BackgroundColor3 = Colors.Gunmetal_Mid; nowPlayingFrame.BackgroundTransparency = 0.2
-    nowPlayingFrame.BorderSizePixel = 0
-    Instance.new("UICorner", nowPlayingFrame).CornerRadius = UDim.new(0, math.floor(8 * SF))
+    -- "No video" placeholder
+    local noVideoLabel = Instance.new("TextLabel", videoDisplay)
+    noVideoLabel.Size = UDim2.new(1, 0, 1, 0)
+    noVideoLabel.Text = "🎬\nNo Video Loaded\n\nPaste a URL in the Media tab"
+    noVideoLabel.TextColor3 = Colors.Gunmetal_Accent; noVideoLabel.BackgroundTransparency = 1
+    noVideoLabel.Font = Enum.Font.GothamBold; noVideoLabel.TextSize = math.floor(12 * SF)
+    noVideoLabel.TextWrapped = true; noVideoLabel.ZIndex = 27
+    noVideoLabel.Name = "Placeholder"
 
-    local npDot = Instance.new("Frame", nowPlayingFrame)
+    -- Video controls bar
+    local videoControlBar = Instance.new("Frame", videoOverlay)
+    videoControlBar.Size = UDim2.new(1, -math.floor(8 * SF), 0, math.floor(44 * SF))
+    videoControlBar.Position = UDim2.new(0, math.floor(4 * SF), 1, -(math.floor(48 * SF)))
+    videoControlBar.BackgroundColor3 = Colors.Gunmetal_Mid; videoControlBar.BackgroundTransparency = 0.2
+    videoControlBar.BorderSizePixel = 0; videoControlBar.ZIndex = 26
+    Instance.new("UICorner", videoControlBar).CornerRadius = UDim.new(0, math.floor(8 * SF))
+
+    -- Progress bar (clickable seek)
+    local progressBarBg = Instance.new("TextButton", videoControlBar)
+    progressBarBg.Size = UDim2.new(1, -math.floor(16 * SF), 0, math.floor(6 * SF))
+    progressBarBg.Position = UDim2.new(0, math.floor(8 * SF), 0, math.floor(4 * SF))
+    progressBarBg.BackgroundColor3 = Colors.Gunmetal_Light; progressBarBg.BackgroundTransparency = 0.3
+    progressBarBg.BorderSizePixel = 0; progressBarBg.Text = ""; progressBarBg.ZIndex = 27
+    Instance.new("UICorner", progressBarBg).CornerRadius = UDim.new(1, 0)
+
+    local progressBarFill = Instance.new("Frame", progressBarBg)
+    progressBarFill.Size = UDim2.new(0, 0, 1, 0)
+    progressBarFill.BackgroundColor3 = Colors.Red_Primary; progressBarFill.BorderSizePixel = 0; progressBarFill.ZIndex = 28
+    Instance.new("UICorner", progressBarFill).CornerRadius = UDim.new(1, 0)
+
+    local progressKnob = Instance.new("Frame", progressBarBg)
+    progressKnob.Size = UDim2.new(0, math.floor(10 * SF), 0, math.floor(10 * SF))
+    progressKnob.Position = UDim2.new(0, 0, 0.5, -math.floor(5 * SF))
+    progressKnob.BackgroundColor3 = Colors.Red_Glow; progressKnob.BorderSizePixel = 0; progressKnob.ZIndex = 29
+    Instance.new("UICorner", progressKnob).CornerRadius = UDim.new(1, 0)
+
+    -- Seek on click
+    progressBarBg.MouseButton1Click:Connect(function()
+        if currentVideoFrame and currentVideoFrame.Video ~= "" then
+            local mousePos = UserInputService:GetMouseLocation()
+            local barPos = progressBarBg.AbsolutePosition
+            local barSize = progressBarBg.AbsoluteSize
+            local relX = math.clamp((mousePos.X - barPos.X) / barSize.X, 0, 1)
+            currentVideoFrame.TimePosition = relX * currentVideoFrame.TimeLength
+        end
+    end)
+
+    -- Control buttons row
+    local vcBtnRow = Instance.new("Frame", videoControlBar)
+    vcBtnRow.Size = UDim2.new(1, -math.floor(16 * SF), 0, math.floor(28 * SF))
+    vcBtnRow.Position = UDim2.new(0, math.floor(8 * SF), 0, math.floor(14 * SF))
+    vcBtnRow.BackgroundTransparency = 1; vcBtnRow.ZIndex = 27
+    local vcLayout = Instance.new("UIListLayout", vcBtnRow)
+    vcLayout.FillDirection = Enum.FillDirection.Horizontal
+    vcLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    vcLayout.Padding = UDim.new(0, math.floor(3 * SF))
+    vcLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+
+    local function createVCBtn(text, order, callback)
+        local btn = Instance.new("TextButton", vcBtnRow)
+        btn.Size = UDim2.new(0, math.floor((isMobile and 38 or 32) * SF), 0, math.floor((isMobile and 26 or 22) * SF))
+        btn.LayoutOrder = order; btn.Text = text
+        btn.TextColor3 = Colors.Red_Primary; btn.BackgroundColor3 = Colors.Gunmetal_Dark
+        btn.BackgroundTransparency = 0.3; btn.Font = Enum.Font.GothamBold
+        btn.TextSize = math.floor((isMobile and 12 or 11) * SF)
+        btn.BorderSizePixel = 0; btn.ZIndex = 28
+        Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 4)
+        if callback then btn.MouseButton1Click:Connect(callback) end
+        btn.MouseEnter:Connect(function() TweenService:Create(btn, TweenInfo.new(0.1), {BackgroundTransparency = 0.1}):Play() end)
+        btn.MouseLeave:Connect(function() TweenService:Create(btn, TweenInfo.new(0.1), {BackgroundTransparency = 0.3}):Play() end)
+        return btn
+    end
+
+    -- Play/Pause
+    local vcPlayBtn = createVCBtn("▶", 1, function()
+        if currentVideoFrame then
+            if currentVideoFrame.Playing then
+                currentVideoFrame:Pause()
+                videoPlaying = false
+                vcPlayBtn.Text = "▶"
+            else
+                currentVideoFrame:Play()
+                videoPlaying = true
+                vcPlayBtn.Text = "⏸"
+                noVideoLabel.Visible = false
+            end
+        end
+    end)
+
+    -- Stop
+    createVCBtn("⏹", 2, function()
+        if currentVideoFrame then
+            currentVideoFrame.Playing = false
+            currentVideoFrame.TimePosition = 0
+            videoPlaying = false
+            vcPlayBtn.Text = "▶"
+        end
+    end)
+
+    -- Rewind 5s
+    createVCBtn("⏪", 3, function()
+        if currentVideoFrame then
+            currentVideoFrame.TimePosition = math.max(0, currentVideoFrame.TimePosition - 5)
+        end
+    end)
+
+    -- Forward 5s
+    createVCBtn("⏩", 4, function()
+        if currentVideoFrame then
+            currentVideoFrame.TimePosition = math.min(currentVideoFrame.TimeLength, currentVideoFrame.TimePosition + 5)
+        end
+    end)
+
+    -- Loop
+    local vcLoopBtn = createVCBtn("🔁", 5, function()
+        if currentVideoFrame then
+            currentVideoFrame.Looped = not currentVideoFrame.Looped
+            vcLoopBtn.TextColor3 = currentVideoFrame.Looped and Colors.Red_Glow or Colors.Red_Dim
+        end
+    end)
+
+    -- Volume down
+    createVCBtn("🔉", 6, function()
+        currentVolume = math.clamp(currentVolume - 0.1, 0, 1)
+        if currentVideoFrame then currentVideoFrame.Volume = currentVolume end
+        if currentSound then currentSound.Volume = currentVolume end
+    end)
+
+    -- Volume up
+    createVCBtn("🔊", 7, function()
+        currentVolume = math.clamp(currentVolume + 0.1, 0, 1)
+        if currentVideoFrame then currentVideoFrame.Volume = currentVolume end
+        if currentSound then currentSound.Volume = currentVolume end
+    end)
+
+    -- Time label
+    local vcTimeLabel = Instance.new("TextLabel", vcBtnRow)
+    vcTimeLabel.Size = UDim2.new(0, math.floor(80 * SF), 0, math.floor(22 * SF))
+    vcTimeLabel.LayoutOrder = 8
+    vcTimeLabel.Text = "0:00 / 0:00"
+    vcTimeLabel.TextColor3 = Colors.Red_Dim; vcTimeLabel.BackgroundTransparency = 1
+    vcTimeLabel.Font = Enum.Font.Code; vcTimeLabel.TextSize = math.floor(8 * SF)
+    vcTimeLabel.ZIndex = 28
+
+    -- Update progress bar continuously
+    RunService.Heartbeat:Connect(function()
+        if currentVideoFrame and currentVideoFrame.Video ~= "" and currentVideoFrame.IsLoaded then
+            local pos = currentVideoFrame.TimePosition
+            local dur = currentVideoFrame.TimeLength
+            if dur > 0 then
+                local pct = pos / dur
+                progressBarFill.Size = UDim2.new(pct, 0, 1, 0)
+                progressKnob.Position = UDim2.new(pct, -math.floor(5 * SF), 0.5, -math.floor(5 * SF))
+                vcTimeLabel.Text = formatTime(pos) .. " / " .. formatTime(dur)
+            end
+        end
+    end)
+
+    -- ============================================================================
+    -- VIDEO LOADING FUNCTION (with download + cache)
+    -- ============================================================================
+    local function loadVideo(videoUrl, fileName, statusCallback)
+        statusCallback = statusCallback or function() end
+
+        -- Check if we have file system access
+        if not (isfolder and makefolder and writefile and getcustomasset and isfile) then
+            -- No file access — try direct URL (won't work for most URLs in Roblox)
+            statusCallback("Loading direct (no file system)...")
+            currentVideoFrame.Video = videoUrl
+            noVideoLabel.Visible = false
+            return true
+        end
+
+        -- Ensure folder
+        if not isfolder(mediaFolder .. "/Videos") then
+            pcall(function() makefolder(mediaFolder .. "/Videos") end)
+        end
+
+        local filePath = mediaFolder .. "/Videos/" .. fileName
+
+        -- Check cache first
+        if isfile(filePath) then
+            local fileData = readfile(filePath)
+            statusCallback("Cached | " .. formatSize(#fileData))
+            currentVideoFrame.Video = getcustomasset(filePath)
+            noVideoLabel.Visible = false
+            videoTitleLabel.Text = "🎬 " .. fileName
+            addLog("Video loaded from cache: " .. fileName, false)
+            return true
+        end
+
+        -- Download
+        if not httpRequestFunc then
+            statusCallback("No HTTP request method!")
+            addLog("Video: No HTTP handler available", true)
+            return false
+        end
+
+        statusCallback("Downloading 0%...")
+        addLog("Video: Downloading " .. fileName .. "...", false)
+
+        local success, result = pcall(function()
+            return httpRequestFunc({
+                Url = videoUrl,
+                Method = "GET",
+                Headers = {["Content-Type"] = "application/octet-stream"}
+            })
+        end)
+
+        if not success then
+            statusCallback("Download failed!")
+            addLog("Video: Download failed — " .. tostring(result), true)
+            return false
+        end
+
+        local response = result
+        local body = response.Body or response.body or ""
+
+        if #body == 0 then
+            statusCallback("Empty response!")
+            addLog("Video: Empty response from server", true)
+            return false
+        end
+
+        -- Save to file
+        local writeSuccess = pcall(function() writefile(filePath, body) end)
+        if not writeSuccess then
+            statusCallback("Write failed!")
+            addLog("Video: Failed to write file", true)
+            return false
+        end
+
+        local sizeMB = #body / (1024 * 1024)
+        statusCallback("100% | " .. string.format("%.2fMB", sizeMB))
+        addLog("Video: Downloaded " .. fileName .. " (" .. string.format("%.2fMB", sizeMB) .. ")", false)
+
+        -- Load from cached file
+        currentVideoFrame.Video = getcustomasset(filePath)
+        noVideoLabel.Visible = false
+        videoTitleLabel.Text = "🎬 " .. fileName
+        return true
+    end
+
+    -- ============================================================================
+    -- DISC VISUALIZER (Floating overlay for audio)
+    -- ============================================================================
+    local discOverlay = Instance.new("Frame", gui)
+    discOverlay.Name = "DiscVisualizer"
+    discOverlay.Size = UDim2.new(0, math.floor(180 * SF), 0, math.floor(220 * SF))
+    discOverlay.Position = UDim2.new(1, -(math.floor(200 * SF)), 1, -(math.floor(240 * SF)))
+    discOverlay.BackgroundColor3 = Colors.Gunmetal_Dark
+    discOverlay.BackgroundTransparency = 0.15
+    discOverlay.BorderSizePixel = 0
+    discOverlay.Visible = false; discOverlay.ZIndex = 20
+    Instance.new("UICorner", discOverlay).CornerRadius = UDim.new(0, math.floor(12 * SF))
+    local discBorderStroke = Instance.new("UIStroke", discOverlay)
+    discBorderStroke.Color = Colors.Red_Primary; discBorderStroke.Thickness = 2; discBorderStroke.Transparency = 0.3
+
+    -- Disc header (draggable)
+    local discHeader = Instance.new("TextLabel", discOverlay)
+    discHeader.Size = UDim2.new(1, 0, 0, math.floor(18 * SF))
+    discHeader.Text = "♫ NOW PLAYING"; discHeader.TextColor3 = Colors.Red_Primary
+    discHeader.BackgroundColor3 = Colors.Gunmetal_Mid; discHeader.BackgroundTransparency = 0.3
+    discHeader.Font = Enum.Font.GothamBold; discHeader.TextSize = math.floor(8 * SF)
+    discHeader.BorderSizePixel = 0; discHeader.ZIndex = 21
+
+    local discDragging2 = false
+    local discDragStart2, discStartPos2
+    discHeader.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            discDragging2 = true; discDragStart2 = input.Position; discStartPos2 = discOverlay.Position
+        end
+    end)
+    UserInputService.InputChanged:Connect(function(input)
+        if discDragging2 and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+            local delta = input.Position - discDragStart2
+            discOverlay.Position = UDim2.new(discStartPos2.X.Scale, discStartPos2.X.Offset + delta.X, discStartPos2.Y.Scale, discStartPos2.Y.Offset + delta.Y)
+        end
+    end)
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then discDragging2 = false end
+    end)
+
+    -- Disc visual
+    local discSize = math.floor(120 * SF)
+    local discFrame = Instance.new("Frame", discOverlay)
+    discFrame.Size = UDim2.new(0, discSize, 0, discSize)
+    discFrame.Position = UDim2.new(0.5, -discSize/2, 0, math.floor(24 * SF))
+    discFrame.BackgroundColor3 = Colors.Gunmetal_Dark; discFrame.BorderSizePixel = 0; discFrame.ZIndex = 21
+    Instance.new("UICorner", discFrame).CornerRadius = UDim.new(1, 0)
+    local discOuterStroke = Instance.new("UIStroke", discFrame)
+    discOuterStroke.Color = Colors.Red_Primary; discOuterStroke.Thickness = 3
+
+    -- Disc grooves (concentric rings)
+    for ringIdx = 1, 3 do
+        local ringSize = discSize - (ringIdx * math.floor(28 * SF))
+        local ring = Instance.new("Frame", discFrame)
+        ring.Size = UDim2.new(0, ringSize, 0, ringSize)
+        ring.Position = UDim2.new(0.5, -ringSize/2, 0.5, -ringSize/2)
+        ring.BackgroundColor3 = ringIdx == 3 and Colors.Red_Deep or Colors.Gunmetal_Mid
+        ring.BackgroundTransparency = ringIdx == 3 and 0.3 or 0.5
+        ring.BorderSizePixel = 0; ring.ZIndex = 21 + ringIdx
+        Instance.new("UICorner", ring).CornerRadius = UDim.new(1, 0)
+        local ringStroke = Instance.new("UIStroke", ring)
+        ringStroke.Color = ringIdx == 3 and Colors.Red_Primary or Colors.Red_Dim
+        ringStroke.Thickness = 1
+    end
+
+    -- Center hole
+    local chSize = math.floor(14 * SF)
+    local centerHole = Instance.new("Frame", discFrame)
+    centerHole.Size = UDim2.new(0, chSize, 0, chSize)
+    centerHole.Position = UDim2.new(0.5, -chSize/2, 0.5, -chSize/2)
+    centerHole.BackgroundColor3 = Colors.Gunmetal_Dark; centerHole.BorderSizePixel = 0; centerHole.ZIndex = 25
+    Instance.new("UICorner", centerHole).CornerRadius = UDim.new(1, 0)
+
+    -- Song info labels
+    local songNameLabel = Instance.new("TextLabel", discOverlay)
+    songNameLabel.Size = UDim2.new(1, -math.floor(10 * SF), 0, math.floor(14 * SF))
+    songNameLabel.Position = UDim2.new(0, math.floor(5 * SF), 1, -(math.floor(36 * SF)))
+    songNameLabel.Text = "No track"; songNameLabel.TextColor3 = Colors.Red_Dim
+    songNameLabel.BackgroundTransparency = 1; songNameLabel.Font = Enum.Font.GothamBold
+    songNameLabel.TextSize = math.floor(8 * SF); songNameLabel.TextWrapped = true
+    songNameLabel.TextTruncate = Enum.TextTruncate.AtEnd; songNameLabel.ZIndex = 21
+
+    local progressLabel = Instance.new("TextLabel", discOverlay)
+    progressLabel.Size = UDim2.new(1, -math.floor(10 * SF), 0, math.floor(12 * SF))
+    progressLabel.Position = UDim2.new(0, math.floor(5 * SF), 1, -(math.floor(20 * SF)))
+    progressLabel.Text = "0:00 / 0:00"; progressLabel.TextColor3 = Colors.Gunmetal_Accent
+    progressLabel.BackgroundTransparency = 1; progressLabel.Font = Enum.Font.Code
+    progressLabel.TextSize = math.floor(7 * SF); progressLabel.ZIndex = 21
+
+    -- Volume label
+    local discVolLabel = Instance.new("TextLabel", discOverlay)
+    discVolLabel.Size = UDim2.new(1, -math.floor(10 * SF), 0, math.floor(10 * SF))
+    discVolLabel.Position = UDim2.new(0, math.floor(5 * SF), 1, -(math.floor(8 * SF)))
+    discVolLabel.Text = "VOL: 70%"; discVolLabel.TextColor3 = Colors.Gunmetal_Accent
+    discVolLabel.BackgroundTransparency = 1; discVolLabel.Font = Enum.Font.Code
+    discVolLabel.TextSize = math.floor(6 * SF); discVolLabel.ZIndex = 21
+
+    -- Disc spin animation
+    local discSpinConn = nil
+    local function startDiscSpin()
+        if discSpinConn then return end
+        discSpinning = true
+        discSpinConn = RunService.Heartbeat:Connect(function(dt)
+            if not discSpinning then return end
+            discRotation = (discRotation + dt * 60) % 360
+            discFrame.Rotation = discRotation
+            discOuterStroke.Color = Color3.fromRGB(255, math.floor(20 + math.sin(tick() * 2) * 20), math.floor(30 + math.sin(tick() * 2) * 15))
+            if currentSound and currentSound.Parent then
+                progressLabel.Text = formatTime(currentSound.TimePosition) .. " / " .. formatTime(currentSound.TimeLength)
+            end
+            discVolLabel.Text = "VOL: " .. math.floor(currentVolume * 100) .. "%"
+        end)
+    end
+
+    local function stopDiscSpin()
+        discSpinning = false
+        if discSpinConn then discSpinConn:Disconnect(); discSpinConn = nil end
+    end
+
+    -- ============================================================================
+    -- AUDIO PLAY HELPER
+    -- ============================================================================
+    local function playAudioById(id, displayName)
+        if currentSound and currentSound.Parent then currentSound:Destroy() end
+        stopDiscSpin()
+
+        local char = player.Character
+        local parent = char and char:FindFirstChild("HumanoidRootPart") or workspace
+        currentSound = Instance.new("Sound", parent)
+        currentSound.Name = "TerminalMedia"
+        currentSound.SoundId = "rbxassetid://" .. id
+        currentSound.Volume = currentVolume
+        currentSound.Looped = loopEnabled
+        currentSound:Play()
+
+        currentlyPlaying = displayName or id
+        songNameLabel.Text = currentlyPlaying
+        discOverlay.Visible = true
+        startDiscSpin()
+        addLog("Audio: Playing " .. currentlyPlaying, false)
+
+        table.insert(audioHistory, {id = id, name = currentlyPlaying, time = os.date("%H:%M:%S")})
+
+        currentSound.Ended:Connect(function()
+            stopDiscSpin()
+            progressLabel.Text = "Finished"
+        end)
+
+        return currentSound
+    end
+
+    -- ============================================================================
+    -- SECTION 1: VIDEO PLAYER
+    -- ============================================================================
+    local videoContent = createMediaCollapsible(page, "🎬 VIDEO PLAYER (URL Download + Cache)", 1, true)
+
+    -- Status
+    local videoStatusFrame = Instance.new("Frame", videoContent)
+    videoStatusFrame.Size = UDim2.new(1, 0, 0, math.floor(44 * SF))
+    videoStatusFrame.LayoutOrder = 1
+    videoStatusFrame.BackgroundColor3 = Colors.Gunmetal_Mid; videoStatusFrame.BackgroundTransparency = 0.2
+    videoStatusFrame.BorderSizePixel = 0
+    Instance.new("UICorner", videoStatusFrame).CornerRadius = UDim.new(0, math.floor(8 * SF))
+
+    local vsDot = Instance.new("Frame", videoStatusFrame)
+    vsDot.Size = UDim2.new(0, math.floor(8 * SF), 0, math.floor(8 * SF))
+    vsDot.Position = UDim2.new(0, math.floor(8 * SF), 0, math.floor(8 * SF))
+    vsDot.BackgroundColor3 = Colors.Red_Dim; vsDot.BorderSizePixel = 0
+    Instance.new("UICorner", vsDot).CornerRadius = UDim.new(1, 0)
+
+    local vsLabel = Instance.new("TextLabel", videoStatusFrame)
+    vsLabel.Size = UDim2.new(1, -math.floor(24 * SF), 0, math.floor(14 * SF))
+    vsLabel.Position = UDim2.new(0, math.floor(22 * SF), 0, math.floor(4 * SF))
+    vsLabel.Text = "VIDEO: IDLE"; vsLabel.TextColor3 = Colors.Red_Dim
+    vsLabel.BackgroundTransparency = 1; vsLabel.Font = Enum.Font.GothamBold
+    vsLabel.TextSize = math.floor(10 * SF); vsLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+    local vsInfoLabel = Instance.new("TextLabel", videoStatusFrame)
+    vsInfoLabel.Size = UDim2.new(1, -math.floor(12 * SF), 0, math.floor(12 * SF))
+    vsInfoLabel.Position = UDim2.new(0, math.floor(8 * SF), 0, math.floor(22 * SF))
+    vsInfoLabel.Text = "HTTP: " .. (httpRequestFunc and "Available ✓" or "Not available ✗") .. " | Cache: workspace/" .. mediaFolder .. "/Videos"
+    vsInfoLabel.TextColor3 = Colors.Gunmetal_Accent; vsInfoLabel.BackgroundTransparency = 1
+    vsInfoLabel.Font = Enum.Font.Code; vsInfoLabel.TextSize = math.floor(7 * SF)
+    vsInfoLabel.TextXAlignment = Enum.TextXAlignment.Left; vsInfoLabel.TextWrapped = true
+
+    -- URL input
+    local _, videoUrlBox = createTextInput(videoContent, "Paste video URL (direct .mp4 link)...", 2)
+
+    -- Filename override
+    local _, videoNameBox = createTextInput(videoContent, "Custom filename (optional, auto-detected)...", 3)
+
+    -- Load + Play button
+    createButton(videoContent, "🎬  DOWNLOAD & PLAY VIDEO", 4, function()
+        local url = videoUrlBox.Text:gsub("^%s+", ""):gsub("%s+$", "")
+        if url == "" then
+            vsLabel.Text = "⚠ Enter a URL"; vsLabel.TextColor3 = Colors.Red_Primary
+            return
+        end
+
+        local customName = videoNameBox.Text:gsub("^%s+", ""):gsub("%s+$", "")
+        local fileName = customName ~= "" and customName or extractFileName(url)
+
+        -- Ensure .mp4 extension
+        if not fileName:lower():match("%.mp4$") and not fileName:lower():match("%.webm$") then
+            fileName = fileName .. ".mp4"
+        end
+
+        vsLabel.Text = "VIDEO: DOWNLOADING..."; vsLabel.TextColor3 = Colors.Red_Glow
+        vsDot.BackgroundColor3 = Colors.Red_Glow
+        videoDownloadLabel.Text = "0%"
+
+        task.spawn(function()
+            local success = loadVideo(url, fileName, function(status)
+                videoDownloadLabel.Text = status
+                vsInfoLabel.Text = status
+            end)
+
+            if success then
+                vsLabel.Text = "VIDEO: LOADED ✓"; vsLabel.TextColor3 = Colors.Red_Primary
+                vsDot.BackgroundColor3 = Colors.Red_Primary
+
+                -- Show and auto-play
+                videoOverlay.Visible = true
+                if videoMinimized then
+                    videoMinimized = false
+                    videoOverlay.Size = videoOrigSize
+                end
+                currentVideoFrame:Play()
+                videoPlaying = true
+                vcPlayBtn.Text = "⏸"
+                noVideoLabel.Visible = false
+
+                table.insert(videoHistory, {url = url, name = fileName, time = os.date("%H:%M:%S")})
+                addLog("Video playing: " .. fileName, false)
+            else
+                vsLabel.Text = "VIDEO: FAILED ✗"; vsLabel.TextColor3 = Colors.Red_Primary
+                vsDot.BackgroundColor3 = Colors.Red_Primary
+            end
+
+            task.delay(5, function()
+                vsLabel.Text = "VIDEO: " .. (success and "READY" or "IDLE")
+                vsLabel.TextColor3 = Colors.Red_Dim
+                vsDot.BackgroundColor3 = Colors.Red_Dim
+                videoDownloadLabel.Text = ""
+            end)
+        end)
+    end)
+
+    -- Show/Hide player
+    createButton(videoContent, "📺  TOGGLE VIDEO PLAYER WINDOW", 5, function()
+        videoOverlay.Visible = not videoOverlay.Visible
+        if videoOverlay.Visible and videoMinimized then
+            videoMinimized = false
+            videoOverlay.Size = videoOrigSize
+        end
+    end)
+
+    -- ============================================================================
+    -- SECTION 2: CACHED VIDEOS BROWSER
+    -- ============================================================================
+    local cachedContent = createMediaCollapsible(page, "📂 CACHED VIDEOS", 2, false)
+
+    local cachedListContainer = Instance.new("Frame", cachedContent)
+    cachedListContainer.Size = UDim2.new(1, 0, 0, 0); cachedListContainer.LayoutOrder = 1
+    cachedListContainer.BackgroundTransparency = 1; cachedListContainer.AutomaticSize = Enum.AutomaticSize.Y
+    local clLayout = Instance.new("UIListLayout", cachedListContainer)
+    clLayout.SortOrder = Enum.SortOrder.LayoutOrder; clLayout.Padding = UDim.new(0, math.floor(3 * SF))
+
+    local function refreshCachedVideos()
+        for _, child in ipairs(cachedListContainer:GetChildren()) do
+            if child:IsA("Frame") then child:Destroy() end
+        end
+
+        local files = {}
+        pcall(function()
+            if listfiles then files = listfiles(mediaFolder .. "/Videos") end
+        end)
+
+        if #files == 0 then
+            local noF = Instance.new("Frame", cachedListContainer)
+            noF.Size = UDim2.new(1, 0, 0, math.floor(28 * SF)); noF.LayoutOrder = 1
+            noF.BackgroundTransparency = 1
+            local noFL = Instance.new("TextLabel", noF)
+            noFL.Size = UDim2.new(1, 0, 1, 0)
+            noFL.Text = "No cached videos. Download one above."
+            noFL.TextColor3 = Colors.Gunmetal_Accent; noFL.BackgroundTransparency = 1
+            noFL.Font = Enum.Font.Gotham; noFL.TextSize = math.floor(9 * SF); noFL.TextWrapped = true
+            return
+        end
+
+        for i, filePath in ipairs(files) do
+            local fileName = filePath:match("[^/\\]+$") or filePath
+            local fileSize = 0
+            pcall(function() fileSize = #readfile(filePath) end)
+
+            local fFrame = Instance.new("Frame", cachedListContainer)
+            fFrame.Size = UDim2.new(1, 0, 0, math.floor((isMobile and 44 or 36) * SF))
+            fFrame.LayoutOrder = i; fFrame.BackgroundColor3 = Colors.Gunmetal_Mid
+            fFrame.BackgroundTransparency = 0.3; fFrame.BorderSizePixel = 0
+            Instance.new("UICorner", fFrame).CornerRadius = UDim.new(0, math.floor(6 * SF))
+            Instance.new("UIStroke", fFrame).Color = Colors.Gunmetal_Light
+
+            local fLabel = Instance.new("TextLabel", fFrame)
+            fLabel.Size = UDim2.new(0.55, 0, 1, 0)
+            fLabel.Position = UDim2.new(0, math.floor(8 * SF), 0, 0)
+            fLabel.Text = "🎬 " .. fileName; fLabel.TextColor3 = Colors.Red_Dim
+            fLabel.BackgroundTransparency = 1; fLabel.Font = Enum.Font.Gotham
+            fLabel.TextSize = math.floor((isMobile and 9 or 8) * SF)
+            fLabel.TextXAlignment = Enum.TextXAlignment.Left
+            fLabel.TextWrapped = true; fLabel.TextTruncate = Enum.TextTruncate.AtEnd
+
+            local fSizeLabel = Instance.new("TextLabel", fFrame)
+            fSizeLabel.Size = UDim2.new(0, math.floor(50 * SF), 1, 0)
+            fSizeLabel.Position = UDim2.new(0.55, 0, 0, 0)
+            fSizeLabel.Text = formatSize(fileSize); fSizeLabel.TextColor3 = Colors.Gunmetal_Accent
+            fSizeLabel.BackgroundTransparency = 1; fSizeLabel.Font = Enum.Font.Code
+            fSizeLabel.TextSize = math.floor(7 * SF)
+
+            -- Play from cache
+            local playBtnH = math.floor((isMobile and 28 or 22) * SF)
+            local fPlayBtn = Instance.new("TextButton", fFrame)
+            fPlayBtn.Size = UDim2.new(0, math.floor(36 * SF), 0, playBtnH)
+            fPlayBtn.Position = UDim2.new(1, -(math.floor(80 * SF)), 0.5, -playBtnH/2)
+            fPlayBtn.Text = "▶"; fPlayBtn.TextColor3 = Colors.Red_Primary
+            fPlayBtn.BackgroundColor3 = Colors.Gunmetal_Dark; fPlayBtn.BackgroundTransparency = 0.3
+            fPlayBtn.Font = Enum.Font.GothamBold; fPlayBtn.TextSize = math.floor(11 * SF)
+            fPlayBtn.BorderSizePixel = 0
+            Instance.new("UICorner", fPlayBtn).CornerRadius = UDim.new(0, 4)
+
+            fPlayBtn.MouseButton1Click:Connect(function()
+                pcall(function()
+                    currentVideoFrame.Video = getcustomasset(filePath)
+                    noVideoLabel.Visible = false
+                    videoOverlay.Visible = true
+                    if videoMinimized then videoMinimized = false; videoOverlay.Size = videoOrigSize end
+                    currentVideoFrame:Play()
+                    videoPlaying = true; vcPlayBtn.Text = "⏸"
+                    videoTitleLabel.Text = "🎬 " .. fileName
+                    addLog("Video: Playing cached " .. fileName, false)
+                end)
+            end)
+
+            -- Delete
+            local fDelBtn = Instance.new("TextButton", fFrame)
+            fDelBtn.Size = UDim2.new(0, math.floor(30 * SF), 0, playBtnH)
+            fDelBtn.Position = UDim2.new(1, -(math.floor(40 * SF)), 0.5, -playBtnH/2)
+            fDelBtn.Text = "✕"; fDelBtn.TextColor3 = Colors.Red_Dim
+            fDelBtn.BackgroundColor3 = Colors.Gunmetal_Dark; fDelBtn.BackgroundTransparency = 0.3
+            fDelBtn.Font = Enum.Font.GothamBold; fDelBtn.TextSize = math.floor(10 * SF)
+            fDelBtn.BorderSizePixel = 0
+            Instance.new("UICorner", fDelBtn).CornerRadius = UDim.new(0, 4)
+
+            fDelBtn.MouseButton1Click:Connect(function()
+                pcall(function() delfile(filePath) end)
+                refreshCachedVideos()
+                addLog("Deleted: " .. fileName, false)
+            end)
+
+            fFrame.MouseEnter:Connect(function() TweenService:Create(fFrame, TweenInfo.new(0.1), {BackgroundTransparency = 0.15}):Play(); fLabel.TextColor3 = Colors.Red_Primary end)
+            fFrame.MouseLeave:Connect(function() TweenService:Create(fFrame, TweenInfo.new(0.1), {BackgroundTransparency = 0.3}):Play(); fLabel.TextColor3 = Colors.Red_Dim end)
+        end
+    end
+
+    createButton(cachedContent, "🔄 REFRESH CACHED FILES", 2, function()
+        refreshCachedVideos()
+        addLog("Cached videos refreshed", false)
+    end)
+
+    refreshCachedVideos()
+
+    -- ============================================================================
+    -- SECTION 3: AUDIO PLAYER
+    -- ============================================================================
+    local audioContent = createMediaCollapsible(page, "🎵 ROBLOX AUDIO PLAYER", 3, false)
+
+    -- Now playing status
+    local npFrame = Instance.new("Frame", audioContent)
+    npFrame.Size = UDim2.new(1, 0, 0, math.floor(40 * SF)); npFrame.LayoutOrder = 1
+    npFrame.BackgroundColor3 = Colors.Gunmetal_Mid; npFrame.BackgroundTransparency = 0.2; npFrame.BorderSizePixel = 0
+    Instance.new("UICorner", npFrame).CornerRadius = UDim.new(0, math.floor(8 * SF))
+
+    local npDot = Instance.new("Frame", npFrame)
     npDot.Size = UDim2.new(0, math.floor(8 * SF), 0, math.floor(8 * SF))
-    npDot.Position = UDim2.new(0, math.floor(8 * SF), 0, math.floor(8 * SF))
+    npDot.Position = UDim2.new(0, math.floor(8 * SF), 0.5, -math.floor(4 * SF))
     npDot.BackgroundColor3 = Colors.Red_Dim; npDot.BorderSizePixel = 0
     Instance.new("UICorner", npDot).CornerRadius = UDim.new(1, 0)
 
-    local npLabel = Instance.new("TextLabel", nowPlayingFrame)
+    local npLabel = Instance.new("TextLabel", npFrame)
     npLabel.Size = UDim2.new(1, -math.floor(24 * SF), 0, math.floor(14 * SF))
     npLabel.Position = UDim2.new(0, math.floor(22 * SF), 0, math.floor(4 * SF))
-    npLabel.Text = "NOW PLAYING: Nothing"
-    npLabel.TextColor3 = Colors.Red_Dim; npLabel.BackgroundTransparency = 1
-    npLabel.Font = Enum.Font.GothamBold; npLabel.TextSize = math.floor(10 * SF)
-    npLabel.TextXAlignment = Enum.TextXAlignment.Left
+    npLabel.Text = "AUDIO: IDLE"; npLabel.TextColor3 = Colors.Red_Dim
+    npLabel.BackgroundTransparency = 1; npLabel.Font = Enum.Font.GothamBold
+    npLabel.TextSize = math.floor(10 * SF); npLabel.TextXAlignment = Enum.TextXAlignment.Left
 
-    local npInfoLabel = Instance.new("TextLabel", nowPlayingFrame)
+    local npInfoLabel = Instance.new("TextLabel", npFrame)
     npInfoLabel.Size = UDim2.new(1, -math.floor(12 * SF), 0, math.floor(12 * SF))
-    npInfoLabel.Position = UDim2.new(0, math.floor(8 * SF), 0, math.floor(24 * SF))
-    npInfoLabel.Text = "Enter audio ID or browse local files"
+    npInfoLabel.Position = UDim2.new(0, math.floor(8 * SF), 0, math.floor(20 * SF))
+    npInfoLabel.Text = "Enter audio ID or select preset"
     npInfoLabel.TextColor3 = Colors.Gunmetal_Accent; npInfoLabel.BackgroundTransparency = 1
     npInfoLabel.Font = Enum.Font.Code; npInfoLabel.TextSize = math.floor(7 * SF)
     npInfoLabel.TextXAlignment = Enum.TextXAlignment.Left
 
-    -- Volume slider
-    local volumeFrame = Instance.new("Frame", nowPlayingFrame)
-    volumeFrame.Size = UDim2.new(0.4, 0, 0, math.floor(10 * SF))
-    volumeFrame.Position = UDim2.new(0.55, 0, 0, math.floor(38 * SF))
-    volumeFrame.BackgroundColor3 = Colors.Gunmetal_Light; volumeFrame.BackgroundTransparency = 0.3
-    volumeFrame.BorderSizePixel = 0
-    Instance.new("UICorner", volumeFrame).CornerRadius = UDim.new(1, 0)
-
-    local volumeFill = Instance.new("Frame", volumeFrame)
-    volumeFill.Size = UDim2.new(0.7, 0, 1, 0)
-    volumeFill.BackgroundColor3 = Colors.Red_Primary; volumeFill.BorderSizePixel = 0
-    Instance.new("UICorner", volumeFill).CornerRadius = UDim.new(1, 0)
-
-    local volumeLabel = Instance.new("TextLabel", nowPlayingFrame)
-    volumeLabel.Size = UDim2.new(0, math.floor(50 * SF), 0, math.floor(10 * SF))
-    volumeLabel.Position = UDim2.new(0.55, -(math.floor(55 * SF)), 0, math.floor(38 * SF))
-    volumeLabel.Text = "VOL: 70%"
-    volumeLabel.TextColor3 = Colors.Red_Dim; volumeLabel.BackgroundTransparency = 1
-    volumeLabel.Font = Enum.Font.Code; volumeLabel.TextSize = math.floor(7 * SF)
-    volumeLabel.TextXAlignment = Enum.TextXAlignment.Right
-
-    local currentVolume = 0.7
-
     -- Audio ID input
     local _, audioIdBox = createTextInput(audioContent, "Enter Roblox Audio ID...", 2)
 
-    -- Play/Stop/Controls
-    local controlRow = Instance.new("Frame", audioContent)
-    controlRow.Size = UDim2.new(1, 0, 0, math.floor((isMobile and 44 or 36) * SF))
-    controlRow.LayoutOrder = 3; controlRow.BackgroundTransparency = 1
-    local crLayout = Instance.new("UIListLayout", controlRow)
-    crLayout.FillDirection = Enum.FillDirection.Horizontal
-    crLayout.SortOrder = Enum.SortOrder.LayoutOrder
-    crLayout.Padding = UDim.new(0, math.floor(4 * SF))
+    -- Control row
+    local acRow = Instance.new("Frame", audioContent)
+    acRow.Size = UDim2.new(1, 0, 0, math.floor((isMobile and 42 or 34) * SF))
+    acRow.LayoutOrder = 3; acRow.BackgroundTransparency = 1
+    local acLayout = Instance.new("UIListLayout", acRow)
+    acLayout.FillDirection = Enum.FillDirection.Horizontal
+    acLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    acLayout.Padding = UDim.new(0, math.floor(3 * SF))
 
-    local function createMediaBtn(parent, text, order, callback)
-        local btn = Instance.new("TextButton", parent)
-        btn.Size = UDim2.new(0.24, 0, 1, 0); btn.LayoutOrder = order
+    local function createAudioBtn(text, order, callback)
+        local btn = Instance.new("TextButton", acRow)
+        btn.Size = UDim2.new(0.19, 0, 1, 0); btn.LayoutOrder = order
         btn.Text = text; btn.TextColor3 = Colors.Red_Primary
         btn.BackgroundColor3 = Colors.Gunmetal_Dark; btn.BackgroundTransparency = 0.3
         btn.Font = Enum.Font.GothamBold; btn.TextSize = math.floor((isMobile and 11 or 10) * SF)
@@ -3557,288 +4100,220 @@ do
     end
 
     -- Play
-    createMediaBtn(controlRow, "▶ PLAY", 1, function()
+    createAudioBtn("▶", 1, function()
         local id = audioIdBox.Text:gsub("%s+", "")
-        if id == "" then
-            npLabel.Text = "⚠ Enter audio ID"; npLabel.TextColor3 = Colors.Red_Primary
-            return
-        end
-
-        -- Stop current
-        if currentSound and currentSound.Parent then currentSound:Destroy() end
-        stopDiscSpin()
-
-        -- Create new sound
-        local char = player.Character
-        local parent = char and char:FindFirstChild("HumanoidRootPart") or workspace
-        currentSound = Instance.new("Sound", parent)
-        currentSound.Name = "TerminalMedia"
-        currentSound.SoundId = "rbxassetid://" .. id
-        currentSound.Volume = currentVolume
-        currentSound.Looped = false
-        currentSound:Play()
-
-        currentlyPlaying = id
-        npLabel.Text = "▶ PLAYING: " .. id; npLabel.TextColor3 = Colors.Red_Primary
-        npDot.BackgroundColor3 = Colors.Red_Primary
-        songNameLabel.Text = "Track: " .. id
-
-        -- Show disc
-        discOverlay.Visible = true
-        startDiscSpin()
-
-        addLog("Media: Playing " .. id, false)
-
-        -- Handle end
-        currentSound.Ended:Connect(function()
-            npLabel.Text = "⏹ Finished: " .. id; npLabel.TextColor3 = Colors.Red_Dim
-            npDot.BackgroundColor3 = Colors.Red_Dim
-            stopDiscSpin()
-            progressLabel.Text = "Finished"
-        end)
+        if id == "" then npLabel.Text = "⚠ Enter ID"; npLabel.TextColor3 = Colors.Red_Primary; return end
+        playAudioById(id, "ID: " .. id)
+        npLabel.Text = "▶ PLAYING: " .. id; npLabel.TextColor3 = Colors.Red_Primary; npDot.BackgroundColor3 = Colors.Red_Primary
     end)
 
     -- Pause
-    createMediaBtn(controlRow, "⏸", 2, function()
+    createAudioBtn("⏸", 2, function()
         if currentSound and currentSound.Parent then
-            if currentSound.Playing then
-                currentSound:Pause()
+            if currentSound.Playing then currentSound:Pause(); stopDiscSpin()
                 npLabel.Text = "⏸ PAUSED"; npLabel.TextColor3 = Colors.Red_Dim
-                stopDiscSpin()
-            else
-                currentSound:Resume()
-                npLabel.Text = "▶ PLAYING: " .. (currentlyPlaying or "?")
-                npLabel.TextColor3 = Colors.Red_Primary
-                startDiscSpin()
+            else currentSound:Resume(); startDiscSpin()
+                npLabel.Text = "▶ " .. (currentlyPlaying or "?"); npLabel.TextColor3 = Colors.Red_Primary
             end
         end
     end)
 
     -- Stop
-    createMediaBtn(controlRow, "⏹", 3, function()
-        if currentSound and currentSound.Parent then
-            currentSound:Destroy(); currentSound = nil
-        end
-        currentlyPlaying = nil
-        npLabel.Text = "⏹ Stopped"; npLabel.TextColor3 = Colors.Red_Dim
-        npDot.BackgroundColor3 = Colors.Red_Dim
-        stopDiscSpin()
-        discOverlay.Visible = false
-        songNameLabel.Text = "No track loaded"
-        progressLabel.Text = "0:00 / 0:00"
+    createAudioBtn("⏹", 3, function()
+        if currentSound and currentSound.Parent then currentSound:Destroy(); currentSound = nil end
+        currentlyPlaying = nil; stopDiscSpin(); discOverlay.Visible = false
+        npLabel.Text = "⏹ Stopped"; npLabel.TextColor3 = Colors.Red_Dim; npDot.BackgroundColor3 = Colors.Red_Dim
+        songNameLabel.Text = "No track"; progressLabel.Text = "0:00 / 0:00"
     end)
 
-    -- Loop toggle
-    local loopEnabled = false
-    createMediaBtn(controlRow, "🔁", 4, function()
+    -- Loop
+    local loopBtn = createAudioBtn("🔁", 4, function()
         loopEnabled = not loopEnabled
         if currentSound then currentSound.Looped = loopEnabled end
         npInfoLabel.Text = "Loop: " .. (loopEnabled and "ON" or "OFF")
-        addLog("Loop: " .. (loopEnabled and "ON" or "OFF"), false)
     end)
 
-    -- Volume controls
+    -- Disc toggle
+    createAudioBtn("💿", 5, function()
+        discOverlay.Visible = not discOverlay.Visible
+    end)
+
+    -- Volume row
     local volRow = Instance.new("Frame", audioContent)
-    volRow.Size = UDim2.new(1, 0, 0, math.floor((isMobile and 36 or 28) * SF))
+    volRow.Size = UDim2.new(1, 0, 0, math.floor((isMobile and 34 or 26) * SF))
     volRow.LayoutOrder = 4; volRow.BackgroundTransparency = 1
-    local vrLayout = Instance.new("UIListLayout", volRow)
-    vrLayout.FillDirection = Enum.FillDirection.Horizontal
-    vrLayout.SortOrder = Enum.SortOrder.LayoutOrder
-    vrLayout.Padding = UDim.new(0, math.floor(4 * SF))
+    local vrLayout2 = Instance.new("UIListLayout", volRow)
+    vrLayout2.FillDirection = Enum.FillDirection.Horizontal; vrLayout2.SortOrder = Enum.SortOrder.LayoutOrder
+    vrLayout2.Padding = UDim.new(0, math.floor(3 * SF))
 
-    local function updateVolume(vol)
-        currentVolume = math.clamp(vol, 0, 1)
+    local function createVolBtn(text, order, callback)
+        local btn = Instance.new("TextButton", volRow)
+        btn.Size = UDim2.new(0.24, 0, 1, 0); btn.LayoutOrder = order
+        btn.Text = text; btn.TextColor3 = Colors.Red_Dim
+        btn.BackgroundColor3 = Colors.Gunmetal_Dark; btn.BackgroundTransparency = 0.4
+        btn.Font = Enum.Font.GothamBold; btn.TextSize = math.floor((isMobile and 10 or 9) * SF)
+        btn.BorderSizePixel = 0
+        Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 4)
+        if callback then btn.MouseButton1Click:Connect(callback) end
+        return btn
+    end
+
+    createVolBtn("🔉 −", 1, function()
+        currentVolume = math.clamp(currentVolume - 0.1, 0, 1)
         if currentSound then currentSound.Volume = currentVolume end
-        volumeFill.Size = UDim2.new(currentVolume, 0, 1, 0)
-        volumeLabel.Text = "VOL: " .. math.floor(currentVolume * 100) .. "%"
-    end
-
-    createMediaBtn(volRow, "🔉 −", 1, function() updateVolume(currentVolume - 0.1) end)
-    createMediaBtn(volRow, "🔊 +", 2, function() updateVolume(currentVolume + 0.1) end)
-    createMediaBtn(volRow, "🔇 MUTE", 3, function() updateVolume(0) end)
-    createMediaBtn(volRow, "MAX", 4, function() updateVolume(1) end)
+        npInfoLabel.Text = "VOL: " .. math.floor(currentVolume * 100) .. "%"
+    end)
+    createVolBtn("🔊 +", 2, function()
+        currentVolume = math.clamp(currentVolume + 0.1, 0, 1)
+        if currentSound then currentSound.Volume = currentVolume end
+        npInfoLabel.Text = "VOL: " .. math.floor(currentVolume * 100) .. "%"
+    end)
+    createVolBtn("🔇 MUTE", 3, function()
+        currentVolume = 0
+        if currentSound then currentSound.Volume = 0 end
+        npInfoLabel.Text = "MUTED"
+    end)
+    createVolBtn("MAX", 4, function()
+        currentVolume = 1
+        if currentSound then currentSound.Volume = 1 end
+        npInfoLabel.Text = "VOL: 100%"
+    end)
 
     -- ============================================================================
-    -- SECTION 2: LOCAL FILE BROWSER
+    -- SECTION 4: LOCAL FILES (MP3 + MP4)
     -- ============================================================================
-    local fileContent = createMediaCollapsible(page, "📁 LOCAL FILES (workspace/" .. mediaFolder .. ")", 2, false)
+    local localContent = createMediaCollapsible(page, "📁 LOCAL FILES (workspace/" .. mediaFolder .. ")", 4, false)
 
-    local fileStatusLabel = Instance.new("TextLabel", fileContent)
-    fileStatusLabel.Size = UDim2.new(1, 0, 0, math.floor(20 * SF))
-    fileStatusLabel.LayoutOrder = 1
-    fileStatusLabel.Text = "Place .mp3 / .mp4 files in: workspace/" .. mediaFolder
-    fileStatusLabel.TextColor3 = Colors.Red_Dim; fileStatusLabel.BackgroundTransparency = 1
-    fileStatusLabel.Font = Enum.Font.Code; fileStatusLabel.TextSize = math.floor(8 * SF)
-    fileStatusLabel.TextXAlignment = Enum.TextXAlignment.Left; fileStatusLabel.TextWrapped = true
+    local localFileList = Instance.new("Frame", localContent)
+    localFileList.Size = UDim2.new(1, 0, 0, 0); localFileList.LayoutOrder = 1
+    localFileList.BackgroundTransparency = 1; localFileList.AutomaticSize = Enum.AutomaticSize.Y
+    local lfLayout = Instance.new("UIListLayout", localFileList)
+    lfLayout.SortOrder = Enum.SortOrder.LayoutOrder; lfLayout.Padding = UDim.new(0, math.floor(3 * SF))
 
-    local fileListContainer = Instance.new("Frame", fileContent)
-    fileListContainer.Size = UDim2.new(1, 0, 0, 0)
-    fileListContainer.LayoutOrder = 2
-    fileListContainer.BackgroundTransparency = 1
-    fileListContainer.AutomaticSize = Enum.AutomaticSize.Y
-    local flLayout = Instance.new("UIListLayout", fileListContainer)
-    flLayout.SortOrder = Enum.SortOrder.LayoutOrder
-    flLayout.Padding = UDim.new(0, math.floor(3 * SF))
-
-    local function getFileExtension(filename)
-        return filename:match("^.+(%..+)$") or ""
-    end
-
-    local function refreshFileList()
-        for _, child in ipairs(fileListContainer:GetChildren()) do
+    local function refreshLocalFiles()
+        for _, child in ipairs(localFileList:GetChildren()) do
             if child:IsA("Frame") then child:Destroy() end
         end
 
-        local files = {}
+        local allFiles = {}
         pcall(function()
             if listfiles then
-                files = listfiles(mediaFolder)
+                -- Root media folder
+                for _, f in ipairs(listfiles(mediaFolder)) do
+                    if not isfolder(f) then table.insert(allFiles, f) end
+                end
+                -- Audio subfolder
+                pcall(function()
+                    for _, f in ipairs(listfiles(mediaFolder .. "/Audio")) do table.insert(allFiles, f) end
+                end)
+                -- Videos subfolder
+                pcall(function()
+                    for _, f in ipairs(listfiles(mediaFolder .. "/Videos")) do table.insert(allFiles, f) end
+                end)
             end
         end)
 
-        if #files == 0 then
-            local noFiles = Instance.new("TextLabel", fileListContainer)
-            noFiles.Size = UDim2.new(1, 0, 0, math.floor(30 * SF))
-            noFiles.LayoutOrder = 1
-            noFiles.Text = "No files found. Place .mp3/.mp4 in workspace/" .. mediaFolder
-            noFiles.TextColor3 = Colors.Gunmetal_Accent; noFiles.BackgroundTransparency = 1
-            noFiles.Font = Enum.Font.Gotham; noFiles.TextSize = math.floor(9 * SF)
-            noFiles.TextWrapped = true
-            -- Wrap in frame for cleanup
-            local wrapper = Instance.new("Frame", fileListContainer)
-            wrapper.Size = UDim2.new(1, 0, 0, math.floor(30 * SF))
-            wrapper.LayoutOrder = 1; wrapper.BackgroundTransparency = 1
-            noFiles.Parent = wrapper
+        if #allFiles == 0 then
+            local noF = Instance.new("Frame", localFileList)
+            noF.Size = UDim2.new(1, 0, 0, math.floor(28 * SF)); noF.LayoutOrder = 1; noF.BackgroundTransparency = 1
+            local noFL = Instance.new("TextLabel", noF)
+            noFL.Size = UDim2.new(1, 0, 1, 0)
+            noFL.Text = "No files found. Place media in workspace/" .. mediaFolder
+            noFL.TextColor3 = Colors.Gunmetal_Accent; noFL.BackgroundTransparency = 1
+            noFL.Font = Enum.Font.Gotham; noFL.TextSize = math.floor(9 * SF); noFL.TextWrapped = true
             return
         end
 
-        for i, filePath in ipairs(files) do
+        for i, filePath in ipairs(allFiles) do
             local fileName = filePath:match("[^/\\]+$") or filePath
-            local ext = getFileExtension(fileName):lower()
-            local isAudio = ext == ".mp3" or ext == ".wav" or ext == ".ogg"
-            local isVideo = ext == ".mp4" or ext == ".webm"
+            local ext = (fileName:match("%.([^%.]+)$") or ""):lower()
+            local isAudio = ext == "mp3" or ext == "wav" or ext == "ogg"
+            local isVideo = ext == "mp4" or ext == "webm"
 
             if isAudio or isVideo then
-                local fileFrame = Instance.new("Frame", fileListContainer)
-                fileFrame.Size = UDim2.new(1, 0, 0, math.floor((isMobile and 44 or 36) * SF))
-                fileFrame.LayoutOrder = i
-                fileFrame.BackgroundColor3 = Colors.Gunmetal_Mid; fileFrame.BackgroundTransparency = 0.3
-                fileFrame.BorderSizePixel = 0
-                Instance.new("UICorner", fileFrame).CornerRadius = UDim.new(0, math.floor(6 * SF))
-                Instance.new("UIStroke", fileFrame).Color = Colors.Gunmetal_Light
+                local fileSize = 0
+                pcall(function() fileSize = #readfile(filePath) end)
+
+                local fFrame = Instance.new("Frame", localFileList)
+                fFrame.Size = UDim2.new(1, 0, 0, math.floor((isMobile and 42 or 34) * SF))
+                fFrame.LayoutOrder = i; fFrame.BackgroundColor3 = Colors.Gunmetal_Mid
+                fFrame.BackgroundTransparency = 0.3; fFrame.BorderSizePixel = 0
+                Instance.new("UICorner", fFrame).CornerRadius = UDim.new(0, math.floor(5 * SF))
 
                 local icon = isAudio and "🎵" or "🎬"
-                local fileLabel = Instance.new("TextLabel", fileFrame)
-                fileLabel.Size = UDim2.new(0.65, 0, 1, 0)
-                fileLabel.Position = UDim2.new(0, math.floor(8 * SF), 0, 0)
-                fileLabel.Text = icon .. " " .. fileName
-                fileLabel.TextColor3 = Colors.Red_Dim; fileLabel.BackgroundTransparency = 1
-                fileLabel.Font = Enum.Font.Gotham; fileLabel.TextSize = math.floor((isMobile and 10 or 9) * SF)
-                fileLabel.TextXAlignment = Enum.TextXAlignment.Left
-                fileLabel.TextWrapped = true; fileLabel.TextTruncate = Enum.TextTruncate.AtEnd
+                local fLabel = Instance.new("TextLabel", fFrame)
+                fLabel.Size = UDim2.new(0.55, 0, 1, 0)
+                fLabel.Position = UDim2.new(0, math.floor(8 * SF), 0, 0)
+                fLabel.Text = icon .. " " .. fileName .. " (" .. formatSize(fileSize) .. ")"
+                fLabel.TextColor3 = Colors.Red_Dim; fLabel.BackgroundTransparency = 1
+                fLabel.Font = Enum.Font.Gotham; fLabel.TextSize = math.floor((isMobile and 9 or 8) * SF)
+                fLabel.TextXAlignment = Enum.TextXAlignment.Left
+                fLabel.TextWrapped = true; fLabel.TextTruncate = Enum.TextTruncate.AtEnd
 
-                local playBtn = Instance.new("TextButton", fileFrame)
-                local pbH = math.floor((isMobile and 32 or 26) * SF)
-                playBtn.Size = UDim2.new(0, math.floor(50 * SF), 0, pbH)
-                playBtn.Position = UDim2.new(1, -(math.floor(58 * SF)), 0.5, -pbH/2)
-                playBtn.Text = "▶"
-                playBtn.TextColor3 = Colors.Red_Primary
-                playBtn.BackgroundColor3 = Colors.Gunmetal_Dark; playBtn.BackgroundTransparency = 0.3
-                playBtn.Font = Enum.Font.GothamBold; playBtn.TextSize = math.floor(12 * SF)
-                playBtn.BorderSizePixel = 0
-                Instance.new("UICorner", playBtn).CornerRadius = UDim.new(0, 4)
+                local playBtnH = math.floor((isMobile and 28 or 22) * SF)
+                local fPlayBtn = Instance.new("TextButton", fFrame)
+                fPlayBtn.Size = UDim2.new(0, math.floor(36 * SF), 0, playBtnH)
+                fPlayBtn.Position = UDim2.new(1, -(math.floor(44 * SF)), 0.5, -playBtnH/2)
+                fPlayBtn.Text = "▶"; fPlayBtn.TextColor3 = Colors.Red_Primary
+                fPlayBtn.BackgroundColor3 = Colors.Gunmetal_Dark; fPlayBtn.BackgroundTransparency = 0.3
+                fPlayBtn.Font = Enum.Font.GothamBold; fPlayBtn.TextSize = math.floor(11 * SF)
+                fPlayBtn.BorderSizePixel = 0
+                Instance.new("UICorner", fPlayBtn).CornerRadius = UDim.new(0, 4)
 
-                playBtn.MouseButton1Click:Connect(function()
-                    if isAudio then
-                        -- For audio: try to read file and create sound
-                        addLog("Media: Loading " .. fileName, false)
-                        npLabel.Text = "▶ PLAYING: " .. fileName; npLabel.TextColor3 = Colors.Red_Primary
-                        npDot.BackgroundColor3 = Colors.Red_Primary
-                        songNameLabel.Text = fileName
+                fPlayBtn.MouseButton1Click:Connect(function()
+                    pcall(function()
+                        local asset = nil
+                        if getsynasset then asset = getsynasset(filePath)
+                        elseif getcustomasset then asset = getcustomasset(filePath) end
 
-                        -- Note: Roblox doesn't natively support local MP3 playback
-                        -- This would require the executor to support getsynasset or equivalent
-                        pcall(function()
+                        if not asset then
+                            addLog("No asset loader available", true); return
+                        end
+
+                        if isAudio then
                             if currentSound and currentSound.Parent then currentSound:Destroy() end
                             stopDiscSpin()
-
-                            local asset = nil
-                            if getsynasset then
-                                asset = getsynasset(filePath)
-                            elseif getcustomasset then
-                                asset = getcustomasset(filePath)
-                            end
-
-                            if asset then
-                                local char = player.Character
-                                local parent = char and char:FindFirstChild("HumanoidRootPart") or workspace
-                                currentSound = Instance.new("Sound", parent)
-                                currentSound.Name = "TerminalMedia"
-                                currentSound.SoundId = asset
-                                currentSound.Volume = currentVolume
-                                currentSound.Looped = loopEnabled
-                                currentSound:Play()
-
-                                discOverlay.Visible = true
-                                startDiscSpin()
-
-                                currentSound.Ended:Connect(function()
-                                    npLabel.Text = "⏹ Finished: " .. fileName
-                                    npLabel.TextColor3 = Colors.Red_Dim
-                                    stopDiscSpin()
-                                end)
-                            else
-                                npLabel.Text = "⚠ No asset loader (getsynasset/getcustomasset)"
-                                npLabel.TextColor3 = Colors.Red_Primary
-                                addLog("Media: Asset loader not available", true)
-                            end
-                        end)
-                    elseif isVideo then
-                        -- For video: use VideoFrame
-                        addLog("Media: Loading video " .. fileName, false)
-
-                        pcall(function()
-                            local asset = nil
-                            if getsynasset then
-                                asset = getsynasset(filePath)
-                            elseif getcustomasset then
-                                asset = getcustomasset(filePath)
-                            end
-
-                            if asset then
-                                videoFrame.Video = asset
-                                videoFrame.Playing = true
-                                videoFrame.Looped = false
-                                videoOverlay.Visible = true
-                                videoTitle.Text = "▶ " .. fileName
-
-                                -- Hide disc for video
-                                discOverlay.Visible = false
-                                stopDiscSpin()
-                            else
-                                addLog("Media: Asset loader not available for video", true)
-                            end
-                        end)
-                    end
+                            local char = player.Character
+                            local parent = char and char:FindFirstChild("HumanoidRootPart") or workspace
+                            currentSound = Instance.new("Sound", parent)
+                            currentSound.Name = "TerminalMedia"
+                            currentSound.SoundId = asset
+                            currentSound.Volume = currentVolume
+                            currentSound.Looped = loopEnabled
+                            currentSound:Play()
+                            currentlyPlaying = fileName; songNameLabel.Text = fileName
+                            discOverlay.Visible = true; startDiscSpin()
+                            npLabel.Text = "▶ " .. fileName; npLabel.TextColor3 = Colors.Red_Primary
+                            npDot.BackgroundColor3 = Colors.Red_Primary
+                            addLog("Playing local: " .. fileName, false)
+                        elseif isVideo then
+                            currentVideoFrame.Video = asset
+                            noVideoLabel.Visible = false
+                            videoOverlay.Visible = true
+                            if videoMinimized then videoMinimized = false; videoOverlay.Size = videoOrigSize end
+                            currentVideoFrame:Play(); videoPlaying = true; vcPlayBtn.Text = "⏸"
+                            videoTitleLabel.Text = "🎬 " .. fileName
+                            discOverlay.Visible = false; stopDiscSpin()
+                            addLog("Playing video: " .. fileName, false)
+                        end
+                    end)
                 end)
+
+                fFrame.MouseEnter:Connect(function() TweenService:Create(fFrame, TweenInfo.new(0.1), {BackgroundTransparency = 0.15}):Play() end)
+                fFrame.MouseLeave:Connect(function() TweenService:Create(fFrame, TweenInfo.new(0.1), {BackgroundTransparency = 0.3}):Play() end)
             end
         end
-
-        fileStatusLabel.Text = #files .. " files found in workspace/" .. mediaFolder
     end
 
-    createButton(fileContent, "🔄 REFRESH FILE LIST", 3, function()
-        refreshFileList()
-        addLog("Media: File list refreshed", false)
+    createButton(localContent, "🔄 REFRESH FILES", 2, function()
+        refreshLocalFiles(); addLog("Local files refreshed", false)
     end)
-
-    -- Initial load
-    refreshFileList()
+    refreshLocalFiles()
 
     -- ============================================================================
-    -- SECTION 3: AUDIO PRESETS (Popular Roblox Audio IDs)
+    -- SECTION 5: AUDIO PRESETS
     -- ============================================================================
-    local presetsContent = createMediaCollapsible(page, "🎶 AUDIO PRESETS", 3, false)
+    local presetsContent = createMediaCollapsible(page, "🎶 AUDIO PRESETS", 5, false)
 
     local presets = {
         {name = "Megalovania", id = "2858004684"},
@@ -3851,97 +4326,109 @@ do
         {name = "Crab Rave", id = "2631050065"},
         {name = "Spooky Scary Skeletons", id = "160442087"},
         {name = "Thomas the Tank Engine", id = "6556703819"},
+        {name = "All Star", id = "2516262689"},
         {name = "Curb Your Enthusiasm", id = "2304526874"},
-        {name = "All Star - Smash Mouth", id = "2516262689"},
     }
 
     for i, preset in ipairs(presets) do
-        local presetFrame = Instance.new("Frame", presetsContent)
-        presetFrame.Size = UDim2.new(1, 0, 0, math.floor((isMobile and 38 or 30) * SF))
-        presetFrame.LayoutOrder = i
-        presetFrame.BackgroundColor3 = Colors.Gunmetal_Dark; presetFrame.BackgroundTransparency = 0.4
-        presetFrame.BorderSizePixel = 0
-        Instance.new("UICorner", presetFrame).CornerRadius = UDim.new(0, math.floor(5 * SF))
+        local pFrame = Instance.new("Frame", presetsContent)
+        pFrame.Size = UDim2.new(1, 0, 0, math.floor((isMobile and 36 or 28) * SF))
+        pFrame.LayoutOrder = i; pFrame.BackgroundColor3 = Colors.Gunmetal_Dark
+        pFrame.BackgroundTransparency = 0.4; pFrame.BorderSizePixel = 0
+        Instance.new("UICorner", pFrame).CornerRadius = UDim.new(0, math.floor(5 * SF))
 
-        local presetLabel = Instance.new("TextLabel", presetFrame)
-        presetLabel.Size = UDim2.new(0.65, 0, 1, 0)
-        presetLabel.Position = UDim2.new(0, math.floor(8 * SF), 0, 0)
-        presetLabel.Text = "🎵 " .. preset.name
-        presetLabel.TextColor3 = Colors.Red_Dim; presetLabel.BackgroundTransparency = 1
-        presetLabel.Font = Enum.Font.Gotham; presetLabel.TextSize = math.floor((isMobile and 10 or 9) * SF)
-        presetLabel.TextXAlignment = Enum.TextXAlignment.Left
+        local pLabel = Instance.new("TextLabel", pFrame)
+        pLabel.Size = UDim2.new(0.7, 0, 1, 0)
+        pLabel.Position = UDim2.new(0, math.floor(8 * SF), 0, 0)
+        pLabel.Text = "🎵 " .. preset.name; pLabel.TextColor3 = Colors.Red_Dim
+        pLabel.BackgroundTransparency = 1; pLabel.Font = Enum.Font.Gotham
+        pLabel.TextSize = math.floor((isMobile and 10 or 9) * SF); pLabel.TextXAlignment = Enum.TextXAlignment.Left
 
-        local presetPlayBtn = Instance.new("TextButton", presetFrame)
-        presetPlayBtn.Size = UDim2.new(0, math.floor(44 * SF), 0, math.floor((isMobile and 28 or 22) * SF))
-        presetPlayBtn.Position = UDim2.new(1, -(math.floor(52 * SF)), 0.5, -math.floor((isMobile and 14 or 11) * SF))
-        presetPlayBtn.Text = "▶"; presetPlayBtn.TextColor3 = Colors.Red_Primary
-        presetPlayBtn.BackgroundColor3 = Colors.Gunmetal_Dark; presetPlayBtn.BackgroundTransparency = 0.3
-        presetPlayBtn.Font = Enum.Font.GothamBold; presetPlayBtn.TextSize = math.floor(11 * SF)
-        presetPlayBtn.BorderSizePixel = 0
-        Instance.new("UICorner", presetPlayBtn).CornerRadius = UDim.new(0, 4)
+        local pBtn = Instance.new("TextButton", pFrame)
+        pBtn.Size = UDim2.new(0, math.floor(36 * SF), 0, math.floor((isMobile and 26 or 20) * SF))
+        pBtn.Position = UDim2.new(1, -(math.floor(44 * SF)), 0.5, -math.floor((isMobile and 13 or 10) * SF))
+        pBtn.Text = "▶"; pBtn.TextColor3 = Colors.Red_Primary
+        pBtn.BackgroundColor3 = Colors.Gunmetal_Dark; pBtn.BackgroundTransparency = 0.3
+        pBtn.Font = Enum.Font.GothamBold; pBtn.TextSize = math.floor(11 * SF); pBtn.BorderSizePixel = 0
+        Instance.new("UICorner", pBtn).CornerRadius = UDim.new(0, 4)
 
-        presetPlayBtn.MouseButton1Click:Connect(function()
+        pBtn.MouseButton1Click:Connect(function()
             audioIdBox.Text = preset.id
-
-            -- Auto-play
-            if currentSound and currentSound.Parent then currentSound:Destroy() end
-            stopDiscSpin()
-
-            local char = player.Character
-            local parent = char and char:FindFirstChild("HumanoidRootPart") or workspace
-            currentSound = Instance.new("Sound", parent)
-            currentSound.Name = "TerminalMedia"
-            currentSound.SoundId = "rbxassetid://" .. preset.id
-            currentSound.Volume = currentVolume
-            currentSound.Looped = loopEnabled
-            currentSound:Play()
-
-            currentlyPlaying = preset.id
+            playAudioById(preset.id, preset.name)
             npLabel.Text = "▶ " .. preset.name; npLabel.TextColor3 = Colors.Red_Primary
             npDot.BackgroundColor3 = Colors.Red_Primary
-            songNameLabel.Text = preset.name
-
-            discOverlay.Visible = true
-            startDiscSpin()
-            addLog("Media: Playing preset — " .. preset.name, false)
-
-            currentSound.Ended:Connect(function()
-                npLabel.Text = "⏹ " .. preset.name; npLabel.TextColor3 = Colors.Red_Dim
-                stopDiscSpin()
-            end)
         end)
 
-        presetFrame.MouseEnter:Connect(function()
-            TweenService:Create(presetFrame, TweenInfo.new(0.1), {BackgroundTransparency = 0.2}):Play()
-            presetLabel.TextColor3 = Colors.Red_Primary
-        end)
-        presetFrame.MouseLeave:Connect(function()
-            TweenService:Create(presetFrame, TweenInfo.new(0.1), {BackgroundTransparency = 0.4}):Play()
-            presetLabel.TextColor3 = Colors.Red_Dim
-        end)
+        pFrame.MouseEnter:Connect(function() TweenService:Create(pFrame, TweenInfo.new(0.1), {BackgroundTransparency = 0.2}):Play(); pLabel.TextColor3 = Colors.Red_Primary end)
+        pFrame.MouseLeave:Connect(function() TweenService:Create(pFrame, TweenInfo.new(0.1), {BackgroundTransparency = 0.4}):Play(); pLabel.TextColor3 = Colors.Red_Dim end)
     end
 
     -- ============================================================================
-    -- SECTION 4: RADIO REMOTE (Fire to server)
+    -- SECTION 6: SERVER RADIO BROADCAST
     -- ============================================================================
-    local radioRemoteContent = createMediaCollapsible(page, "📡 SERVER RADIO (Remote)", 4, false)
+    local radioContent = createMediaCollapsible(page, "📡 SERVER RADIO BROADCAST", 6, false)
 
-    local _, serverRadioBox = createTextInput(radioRemoteContent, "Audio ID to broadcast...", 1)
+    local _, serverRadioBox = createTextInput(radioContent, "Audio ID to broadcast...", 1)
 
-    createButton(radioRemoteContent, "📡 BROADCAST TO SERVER", 2, function()
+    createButton(radioContent, "📡 BROADCAST", 2, function()
         local id = serverRadioBox.Text:gsub("%s+", "")
         if id == "" then return end
-        pcall(function()
-            if radioRemote then radioRemote:FireServer(tonumber(id) or id) end
-        end)
+        pcall(function() if radioRemote then radioRemote:FireServer(tonumber(id) or id) end end)
         addLog("Radio broadcast: " .. id, false)
     end)
 
-    createButton(radioRemoteContent, "📡 STOP SERVER RADIO", 3, function()
-        pcall(function()
-            if radioRemote then radioRemote:FireServer(0) end
-        end)
-        addLog("Radio broadcast: Stopped", false)
+    createButton(radioContent, "📡 STOP BROADCAST", 3, function()
+        pcall(function() if radioRemote then radioRemote:FireServer(0) end end)
+        addLog("Broadcast stopped", false)
+    end)
+
+    -- ============================================================================
+    -- SECTION 7: PLAY HISTORY
+    -- ============================================================================
+    local historyContent = createMediaCollapsible(page, "📜 PLAY HISTORY", 7, false)
+
+    local historyListFrame = Instance.new("ScrollingFrame", historyContent)
+    historyListFrame.Size = UDim2.new(1, 0, 0, math.floor(120 * SF)); historyListFrame.LayoutOrder = 1
+    historyListFrame.BackgroundColor3 = Colors.Gunmetal_Dark; historyListFrame.BackgroundTransparency = 0.1
+    historyListFrame.BorderSizePixel = 0
+    historyListFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
+    historyListFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    historyListFrame.ScrollBarThickness = isMobile and 5 or 3
+    historyListFrame.ScrollBarImageColor3 = Colors.Red_Primary
+    Instance.new("UICorner", historyListFrame).CornerRadius = UDim.new(0, math.floor(6 * SF))
+    Instance.new("UIStroke", historyListFrame).Color = Colors.Red_Dim
+    local hlLayout = Instance.new("UIListLayout", historyListFrame)
+    hlLayout.SortOrder = Enum.SortOrder.LayoutOrder; hlLayout.Padding = UDim.new(0, 1)
+    local hlPad = Instance.new("UIPadding", historyListFrame)
+    hlPad.PaddingLeft = UDim.new(0, 6); hlPad.PaddingTop = UDim.new(0, 4); hlPad.PaddingRight = UDim.new(0, 6)
+
+    local histLineCount = 0
+    local function addHistoryEntry(text)
+        histLineCount = histLineCount + 1
+        local entry = Instance.new("TextLabel", historyListFrame)
+        entry.Size = UDim2.new(1, 0, 0, 0); entry.AutomaticSize = Enum.AutomaticSize.Y
+        entry.LayoutOrder = histLineCount; entry.Text = text
+        entry.TextColor3 = Colors.Red_Dim; entry.BackgroundTransparency = 1
+        entry.Font = Enum.Font.Code; entry.TextSize = math.floor((isMobile and 8 or 7) * SF)
+        entry.TextXAlignment = Enum.TextXAlignment.Left; entry.TextWrapped = true
+        task.defer(function() historyListFrame.CanvasPosition = Vector2.new(0, historyListFrame.AbsoluteCanvasSize.Y) end)
+    end
+
+    addHistoryEntry("[SYS] Media history initialized")
+
+    -- Hook into play functions to log history
+    local origPlayAudio = playAudioById
+    playAudioById = function(id, displayName)
+        addHistoryEntry("[" .. os.date("%H:%M:%S") .. "] 🎵 " .. (displayName or id))
+        return origPlayAudio(id, displayName)
+    end
+
+    createButton(historyContent, "🗑 CLEAR HISTORY", 2, function()
+        for _, child in ipairs(historyListFrame:GetChildren()) do
+            if child:IsA("TextLabel") then child:Destroy() end
+        end
+        histLineCount = 0; audioHistory = {}; videoHistory = {}
+        addHistoryEntry("[SYS] History cleared")
     end)
 end
 
