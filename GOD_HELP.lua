@@ -35,6 +35,17 @@ local DESTINATIONS = {
 }
 
 -- =====================
+-- BLOOD RED TERMINAL COLORS
+-- =====================
+local TERMINAL_TEXT_COLOR   = Color3.fromRGB(200, 0, 0)
+local TERMINAL_GLOW_COLOR  = Color3.fromRGB(255, 0, 0)
+local TERMINAL_DIM_COLOR   = Color3.fromRGB(140, 0, 0)
+local TERMINAL_BG_TINT     = Color3.fromRGB(30, 0, 0)
+local TERMINAL_BTN_BG      = Color3.fromRGB(40, 0, 0)
+local TERMINAL_BTN_BORDER  = Color3.fromRGB(200, 0, 0)
+local TERMINAL_BTN_HOVER   = Color3.fromRGB(60, 0, 0)
+
+-- =====================
 -- TELEPORT TO BASEPLATE
 -- =====================
 task.wait(0.5)
@@ -130,7 +141,7 @@ blackFrame.ZIndex = 10
 blackFrame.Parent = screenGui
 
 -- =====================
--- TERMINAL LABEL
+-- TERMINAL LABEL (BLOOD RED)
 -- =====================
 local terminalFrame = Instance.new("Frame")
 terminalFrame.Size = UDim2.fromScale(1, 1)
@@ -138,11 +149,62 @@ terminalFrame.BackgroundTransparency = 1
 terminalFrame.ZIndex = 20
 terminalFrame.Parent = screenGui
 
+-- Subtle blood red background tint for the terminal
+local terminalBgTint = Instance.new("Frame")
+terminalBgTint.Size = UDim2.fromScale(1, 1)
+terminalBgTint.BackgroundColor3 = TERMINAL_BG_TINT
+terminalBgTint.BackgroundTransparency = 0.85
+terminalBgTint.BorderSizePixel = 0
+terminalBgTint.ZIndex = 19
+terminalBgTint.Visible = false
+terminalBgTint.Parent = screenGui
+
+-- Scanline overlay for CRT blood-red feel
+local scanlineFrame = Instance.new("Frame")
+scanlineFrame.Size = UDim2.fromScale(1, 1)
+scanlineFrame.BackgroundTransparency = 1
+scanlineFrame.ZIndex = 25
+scanlineFrame.Visible = false
+scanlineFrame.Parent = screenGui
+
+-- Create subtle horizontal scanlines
+for i = 0, 60 do
+	local scanline = Instance.new("Frame")
+	scanline.Size = UDim2.new(1, 0, 0, 1)
+	scanline.Position = UDim2.new(0, 0, 0, i * 18)
+	scanline.BackgroundColor3 = Color3.fromRGB(255, 0, 0)
+	scanline.BackgroundTransparency = 0.94
+	scanline.BorderSizePixel = 0
+	scanline.ZIndex = 25
+	scanline.Parent = scanlineFrame
+end
+
+-- Red vignette corners
+local vignetteTop = Instance.new("Frame")
+vignetteTop.Size = UDim2.new(1, 0, 0.15, 0)
+vignetteTop.Position = UDim2.fromScale(0, 0)
+vignetteTop.BackgroundColor3 = Color3.fromRGB(80, 0, 0)
+vignetteTop.BackgroundTransparency = 0.88
+vignetteTop.BorderSizePixel = 0
+vignetteTop.ZIndex = 24
+vignetteTop.Visible = false
+vignetteTop.Parent = screenGui
+
+local vignetteBottom = Instance.new("Frame")
+vignetteBottom.Size = UDim2.new(1, 0, 0.15, 0)
+vignetteBottom.Position = UDim2.fromScale(0, 0.85)
+vignetteBottom.BackgroundColor3 = Color3.fromRGB(80, 0, 0)
+vignetteBottom.BackgroundTransparency = 0.88
+vignetteBottom.BorderSizePixel = 0
+vignetteBottom.ZIndex = 24
+vignetteBottom.Visible = false
+vignetteBottom.Parent = screenGui
+
 local terminalLabel = Instance.new("TextLabel")
 terminalLabel.Size = UDim2.new(1, -80, 0.4, 0)
 terminalLabel.Position = UDim2.fromOffset(40, 40)
 terminalLabel.BackgroundTransparency = 1
-terminalLabel.TextColor3 = Color3.fromRGB(0, 255, 80)
+terminalLabel.TextColor3 = TERMINAL_TEXT_COLOR
 terminalLabel.Font = Enum.Font.Code
 terminalLabel.TextScaled = false
 terminalLabel.TextSize = 28
@@ -153,6 +215,13 @@ terminalLabel.Text = ""
 terminalLabel.ZIndex = 20
 terminalLabel.TextWrapped = true
 terminalLabel.Parent = terminalFrame
+
+-- Red text stroke for glow effect
+local terminalStroke = Instance.new("UIStroke")
+terminalStroke.Color = TERMINAL_GLOW_COLOR
+terminalStroke.Thickness = 0.5
+terminalStroke.Transparency = 0.6
+terminalStroke.Parent = terminalLabel
 
 -- Destination buttons container
 local buttonFrame = Instance.new("Frame")
@@ -212,12 +281,57 @@ local function appendTypewrite(label, msg, speed)
 end
 
 -- =====================
--- TERMINAL SEQUENCE
+-- TERMINAL RED FLICKER EFFECT
+-- =====================
+local terminalFlickerActive = false
+
+local function startTerminalFlicker()
+	terminalFlickerActive = true
+	task.spawn(function()
+		while terminalFlickerActive do
+			-- Random brightness flicker on the text
+			local flickerR = math.random(160, 220)
+			terminalLabel.TextColor3 = Color3.fromRGB(flickerR, 0, 0)
+			task.wait(math.random(5, 15) / 100)
+			terminalLabel.TextColor3 = TERMINAL_TEXT_COLOR
+			task.wait(math.random(8, 40) / 100)
+
+			-- Occasional hard flicker
+			if math.random() < 0.08 then
+				terminalLabel.TextTransparency = 0.4
+				task.wait(0.03)
+				terminalLabel.TextTransparency = 0
+				task.wait(0.02)
+				terminalLabel.TextTransparency = 0.2
+				task.wait(0.03)
+				terminalLabel.TextTransparency = 0
+			end
+		end
+	end)
+end
+
+local function stopTerminalFlicker()
+	terminalFlickerActive = false
+	terminalLabel.TextColor3 = TERMINAL_TEXT_COLOR
+	terminalLabel.TextTransparency = 0
+end
+
+-- =====================
+-- TERMINAL SEQUENCE (BLOOD RED)
 -- =====================
 local function doTerminalSequence()
 	blackFrame.BackgroundTransparency = 0
 	terminalLabel.Text = ""
 	buttonFrame.Visible = false
+
+	-- Activate red overlays
+	terminalBgTint.Visible = true
+	scanlineFrame.Visible = true
+	vignetteTop.Visible = true
+	vignetteBottom.Visible = true
+
+	-- Start the red flicker
+	startTerminalFlicker()
 
 	task.wait(0.8)
 
@@ -241,21 +355,52 @@ local function doTerminalSequence()
 	-- Show clickable buttons
 	buttonFrame.Visible = true
 
-	-- Build buttons
+	-- Build buttons (BLOOD RED STYLED)
 	local buttons = {}
 	for i, dest in ipairs(DESTINATIONS) do
 		local btn = Instance.new("TextButton")
 		btn.Size = UDim2.new(1, 0, 0, 48)
-		btn.BackgroundColor3 = Color3.fromRGB(0, 30, 0)
-		btn.BorderColor3 = Color3.fromRGB(0, 255, 80)
+		btn.BackgroundColor3 = TERMINAL_BTN_BG
+		btn.BorderColor3 = TERMINAL_BTN_BORDER
 		btn.BorderSizePixel = 1
 		btn.Font = Enum.Font.Code
 		btn.TextSize = 20
-		btn.TextColor3 = Color3.fromRGB(0, 255, 80)
+		btn.TextColor3 = TERMINAL_TEXT_COLOR
 		btn.Text = string.format("[ %d ] %s", i, dest.name)
 		btn.ZIndex = 22
+		btn.AutoButtonColor = false
 		btn.Parent = buttonFrame
 		buttons[i] = btn
+
+		-- Red button stroke glow
+		local btnStroke = Instance.new("UIStroke")
+		btnStroke.Color = TERMINAL_DIM_COLOR
+		btnStroke.Thickness = 1
+		btnStroke.Transparency = 0.4
+		btnStroke.Parent = btn
+
+		local btnCorner = Instance.new("UICorner")
+		btnCorner.CornerRadius = UDim.new(0, 4)
+		btnCorner.Parent = btn
+
+		-- Hover effects
+		btn.MouseEnter:Connect(function()
+			btn.BackgroundColor3 = TERMINAL_BTN_HOVER
+			btn.TextColor3 = TERMINAL_GLOW_COLOR
+			if btn:FindFirstChildWhichIsA("UIStroke") then
+				btn.UIStroke.Color = TERMINAL_GLOW_COLOR
+				btn.UIStroke.Transparency = 0
+			end
+		end)
+
+		btn.MouseLeave:Connect(function()
+			btn.BackgroundColor3 = TERMINAL_BTN_BG
+			btn.TextColor3 = TERMINAL_TEXT_COLOR
+			if btn:FindFirstChildWhichIsA("UIStroke") then
+				btn.UIStroke.Color = TERMINAL_DIM_COLOR
+				btn.UIStroke.Transparency = 0.4
+			end
+		end)
 
 		local idx = i
 		btn.MouseButton1Click:Connect(function()
@@ -270,7 +415,7 @@ local function doTerminalSequence()
 			appendTypewrite(terminalLabel, "\n\nWHAT DO YOU WISH TO BRING ALONG?\n", 0.06)
 			task.wait(0.4)
 
-			-- Glitched options
+			-- Glitched options (BLOOD RED)
 			local fakeOptions = {
 				"  [A] MEMORIES........",
 				"  [B] REGRET..........",
@@ -282,9 +427,9 @@ local function doTerminalSequence()
 			for _, opt in ipairs(fakeOptions) do
 				local lbl = Instance.new("TextLabel")
 				lbl.Size = UDim2.new(1, -80, 0, 28)
-				lbl.Position = UDim2.new(0, 40, 0, 0)  -- positioned below terminal
+				lbl.Position = UDim2.new(0, 40, 0, 0)
 				lbl.BackgroundTransparency = 1
-				lbl.TextColor3 = Color3.fromRGB(0, 255, 80)
+				lbl.TextColor3 = TERMINAL_TEXT_COLOR
 				lbl.Font = Enum.Font.Code
 				lbl.TextSize = 22
 				lbl.TextXAlignment = Enum.TextXAlignment.Left
@@ -292,6 +437,13 @@ local function doTerminalSequence()
 				lbl.ZIndex = 21
 				lbl.Parent = terminalFrame
 				table.insert(optionLabels, lbl)
+
+				-- Red stroke on option labels too
+				local optStroke = Instance.new("UIStroke")
+				optStroke.Color = TERMINAL_GLOW_COLOR
+				optStroke.Thickness = 0.4
+				optStroke.Transparency = 0.7
+				optStroke.Parent = lbl
 			end
 
 			-- Stack them below the main terminal label
@@ -317,9 +469,15 @@ local function doTerminalSequence()
 			appendTypewrite(terminalLabel, "\n\nHAVE FUN.\n", 0.08)
 			task.wait(1.2)
 
-			-- Flash to black then teleport
+			-- Stop flicker before teleport
+			stopTerminalFlicker()
+
+			-- Flash blood red then black then teleport
+			blackFrame.BackgroundColor3 = Color3.fromRGB(60, 0, 0)
 			blackFrame.BackgroundTransparency = 0
-			task.wait(0.6)
+			task.wait(0.15)
+			blackFrame.BackgroundColor3 = Color3.new(0, 0, 0)
+			task.wait(0.45)
 
 			humanoidRootPart.CFrame = CFrame.new(dest.pos + Vector3.new(0, 5, 0))
 
@@ -334,16 +492,13 @@ local function doTerminalSequence()
 			-- Clean up terminal
 			terminalLabel.Text = ""
 			blackFrame.BackgroundTransparency = 1
+			terminalBgTint.Visible = false
+			scanlineFrame.Visible = false
+			vignetteTop.Visible = false
+			vignetteBottom.Visible = false
 			screenGui:Destroy()
 		end)
 	end
-end
-
--- =====================
--- UTILITY
--- =====================
-local function lerpVal2(a, b, t)
-	return a + (b - a) * t
 end
 
 -- =====================
@@ -405,4 +560,4 @@ RunService.Heartbeat:Connect(function()
 	end
 end)
 
-print("[Anomaly] Loaded. The cube is watching.")
+print("[Anomaly] Loaded. The cube is watching. Blood red terminal active.")
