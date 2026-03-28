@@ -4433,6 +4433,1373 @@ do
 end
 
 -- ============================================================================
+-- TAB: CASINO (Texas Hold'em, Blackjack, Roulette — Virtual "Slaps" Currency)
+-- ============================================================================
+do
+    local page = tabPages["Casino"]
+
+    -- ============================================================================
+    -- CASINO STATE
+    -- ============================================================================
+    local SAVE_KEY_CASINO = "SlapTerminal_Casino_v1"
+    local casinoData = {
+        slaps = 1000,
+        totalWon = 0,
+        totalLost = 0,
+        gamesPlayed = 0,
+        biggestWin = 0,
+    }
+
+    local function saveCasino()
+        pcall(function()
+            if writefile then
+                writefile(SAVE_KEY_CASINO .. ".json", HttpService:JSONEncode(casinoData))
+            end
+        end)
+    end
+
+    local function loadCasino()
+        pcall(function()
+            if readfile and isfile and isfile(SAVE_KEY_CASINO .. ".json") then
+                local data = HttpService:JSONDecode(readfile(SAVE_KEY_CASINO .. ".json"))
+                for k, v in pairs(data) do casinoData[k] = v end
+            end
+        end)
+    end
+
+    loadCasino()
+
+    -- Card system
+    local suits = {"♠", "♥", "♦", "♣"}
+    local suitColors = {["♠"] = Colors.Red_Dim, ["♥"] = Colors.Red_Primary, ["♦"] = Colors.Red_Primary, ["♣"] = Colors.Red_Dim}
+    local ranks = {"A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"}
+    local rankValues = {A = 11, ["2"] = 2, ["3"] = 3, ["4"] = 4, ["5"] = 5, ["6"] = 6, ["7"] = 7, ["8"] = 8, ["9"] = 9, ["10"] = 10, J = 10, Q = 10, K = 10}
+
+    local function createDeck()
+        local deck = {}
+        for _, suit in ipairs(suits) do
+            for _, rank in ipairs(ranks) do
+                table.insert(deck, {rank = rank, suit = suit})
+            end
+        end
+        return deck
+    end
+
+    local function shuffleDeck(deck)
+        for i = #deck, 2, -1 do
+            local j = math.random(1, i)
+            deck[i], deck[j] = deck[j], deck[i]
+        end
+        return deck
+    end
+
+    local function drawCard(deck)
+        return table.remove(deck, 1)
+    end
+
+    local function handValue(hand)
+        local value = 0
+        local aces = 0
+        for _, card in ipairs(hand) do
+            value = value + rankValues[card.rank]
+            if card.rank == "A" then aces = aces + 1 end
+        end
+        while value > 21 and aces > 0 do
+            value = value - 10
+            aces = aces - 1
+        end
+        return value
+    end
+
+    local function cardToString(card)
+        return card.rank .. card.suit
+    end
+
+    local function handToString(hand)
+        local strs = {}
+        for _, card in ipairs(hand) do
+            table.insert(strs, cardToString(card))
+        end
+        return table.concat(strs, " ")
+    end
+
+    -- ============================================================================
+    -- COLLAPSIBLE HELPER
+    -- ============================================================================
+    local function createCasinoCollapsible(parent, titleText, layoutOrder, defaultOpen)
+        local container = Instance.new("Frame", parent)
+        container.Size = UDim2.new(1, 0, 0, 0)
+        container.LayoutOrder = layoutOrder
+        container.BackgroundTransparency = 1
+        container.AutomaticSize = Enum.AutomaticSize.Y
+        local secLayout = Instance.new("UIListLayout", container)
+        secLayout.SortOrder = Enum.SortOrder.LayoutOrder
+        secLayout.Padding = UDim.new(0, math.floor(4 * SF))
+        local headerBtn = Instance.new("TextButton", container)
+        headerBtn.Size = UDim2.new(1, 0, 0, math.floor((isMobile and 36 or 30) * SF))
+        headerBtn.LayoutOrder = 0
+        headerBtn.Text = (defaultOpen and "▼ " or "▶ ") .. titleText
+        headerBtn.TextColor3 = Colors.Red_Primary
+        headerBtn.BackgroundColor3 = Colors.Gunmetal_Mid
+        headerBtn.BackgroundTransparency = 0.2
+        headerBtn.Font = Enum.Font.GothamBold
+        headerBtn.TextSize = math.floor((isMobile and 12 or 11) * SF)
+        headerBtn.TextXAlignment = Enum.TextXAlignment.Left
+        headerBtn.BorderSizePixel = 0
+        Instance.new("UICorner", headerBtn).CornerRadius = UDim.new(0, math.floor(6 * SF))
+        Instance.new("UIStroke", headerBtn).Color = Colors.Red_Dim
+        Instance.new("UIPadding", headerBtn).PaddingLeft = UDim.new(0, math.floor(10 * SF))
+        local content = Instance.new("Frame", container)
+        content.Name = "Content"; content.Size = UDim2.new(1, 0, 0, 0)
+        content.LayoutOrder = 1; content.BackgroundTransparency = 1
+        content.AutomaticSize = Enum.AutomaticSize.Y
+        content.Visible = defaultOpen or false
+        Instance.new("UIListLayout", content).SortOrder = Enum.SortOrder.LayoutOrder
+        content:FindFirstChildOfClass("UIListLayout").Padding = UDim.new(0, math.floor(4 * SF))
+        local isOpen = defaultOpen or false
+        headerBtn.MouseButton1Click:Connect(function()
+            isOpen = not isOpen; content.Visible = isOpen
+            headerBtn.Text = (isOpen and "▼ " or "▶ ") .. titleText
+        end)
+        headerBtn.MouseEnter:Connect(function() TweenService:Create(headerBtn, TweenInfo.new(0.15), {BackgroundTransparency = 0.05}):Play() end)
+        headerBtn.MouseLeave:Connect(function() TweenService:Create(headerBtn, TweenInfo.new(0.15), {BackgroundTransparency = 0.2}):Play() end)
+        return content
+    end
+
+    -- ============================================================================
+    -- BALANCE DISPLAY
+    -- ============================================================================
+    local balanceFrame = Instance.new("Frame", page)
+    balanceFrame.Size = UDim2.new(1, 0, 0, math.floor(60 * SF))
+    balanceFrame.LayoutOrder = 0
+    balanceFrame.BackgroundColor3 = Colors.Gunmetal_Mid
+    balanceFrame.BackgroundTransparency = 0.15
+    balanceFrame.BorderSizePixel = 0
+    Instance.new("UICorner", balanceFrame).CornerRadius = UDim.new(0, math.floor(10 * SF))
+    local balStroke = Instance.new("UIStroke", balanceFrame)
+    balStroke.Color = Colors.Red_Primary; balStroke.Thickness = 2
+
+    local balIcon = Instance.new("TextLabel", balanceFrame)
+    balIcon.Size = UDim2.new(0, math.floor(30 * SF), 0, math.floor(30 * SF))
+    balIcon.Position = UDim2.new(0, math.floor(10 * SF), 0.5, -math.floor(15 * SF))
+    balIcon.Text = "👋"; balIcon.BackgroundTransparency = 1
+    balIcon.Font = Enum.Font.GothamBold; balIcon.TextSize = math.floor(20 * SF)
+
+    local balLabel = Instance.new("TextLabel", balanceFrame)
+    balLabel.Size = UDim2.new(0.5, 0, 0, math.floor(22 * SF))
+    balLabel.Position = UDim2.new(0, math.floor(44 * SF), 0, math.floor(6 * SF))
+    balLabel.Text = "SLAPS: " .. casinoData.slaps
+    balLabel.TextColor3 = Colors.Red_Primary; balLabel.BackgroundTransparency = 1
+    balLabel.Font = Enum.Font.GothamBold; balLabel.TextSize = math.floor(16 * SF)
+    balLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+    local balStats = Instance.new("TextLabel", balanceFrame)
+    balStats.Size = UDim2.new(1, -math.floor(50 * SF), 0, math.floor(14 * SF))
+    balStats.Position = UDim2.new(0, math.floor(44 * SF), 0, math.floor(32 * SF))
+    balStats.Text = "Won: " .. casinoData.totalWon .. " | Lost: " .. casinoData.totalLost .. " | Games: " .. casinoData.gamesPlayed
+    balStats.TextColor3 = Colors.Gunmetal_Accent; balStats.BackgroundTransparency = 1
+    balStats.Font = Enum.Font.Code; balStats.TextSize = math.floor(7 * SF)
+    balStats.TextXAlignment = Enum.TextXAlignment.Left
+
+    -- Daily bonus button
+    local dailyBtn = Instance.new("TextButton", balanceFrame)
+    dailyBtn.Size = UDim2.new(0, math.floor(80 * SF), 0, math.floor(26 * SF))
+    dailyBtn.Position = UDim2.new(1, -(math.floor(90 * SF)), 0.5, -math.floor(13 * SF))
+    dailyBtn.Text = "+500 FREE"; dailyBtn.TextColor3 = Colors.Red_Primary
+    dailyBtn.BackgroundColor3 = Colors.Red_Deep; dailyBtn.BackgroundTransparency = 0.3
+    dailyBtn.Font = Enum.Font.GothamBold; dailyBtn.TextSize = math.floor(9 * SF)
+    dailyBtn.BorderSizePixel = 0
+    Instance.new("UICorner", dailyBtn).CornerRadius = UDim.new(0, 4)
+
+    dailyBtn.MouseButton1Click:Connect(function()
+        casinoData.slaps = casinoData.slaps + 500
+        saveCasino()
+        balLabel.Text = "SLAPS: " .. casinoData.slaps
+        addLog("Casino: Claimed 500 free slaps!", false)
+    end)
+
+    local function updateBalance()
+        balLabel.Text = "SLAPS: " .. casinoData.slaps
+        balStats.Text = "Won: " .. casinoData.totalWon .. " | Lost: " .. casinoData.totalLost .. " | Games: " .. casinoData.gamesPlayed
+        saveCasino()
+    end
+
+    local function winSlaps(amount)
+        casinoData.slaps = casinoData.slaps + amount
+        casinoData.totalWon = casinoData.totalWon + amount
+        casinoData.gamesPlayed = casinoData.gamesPlayed + 1
+        if amount > casinoData.biggestWin then casinoData.biggestWin = amount end
+        updateBalance()
+    end
+
+    local function loseSlaps(amount)
+        casinoData.slaps = math.max(0, casinoData.slaps - amount)
+        casinoData.totalLost = casinoData.totalLost + amount
+        casinoData.gamesPlayed = casinoData.gamesPlayed + 1
+        updateBalance()
+    end
+
+    -- ============================================================================
+    -- GAME 1: BLACKJACK
+    -- ============================================================================
+    local bjContent = createCasinoCollapsible(page, "🃏 BLACKJACK", 1, true)
+
+    local bjBet = 50
+    local bjDeck = {}
+    local bjPlayerHand = {}
+    local bjDealerHand = {}
+    local bjGameActive = false
+
+    -- Bet input
+    local _, bjBetBox = createTextInput(bjContent, "Bet amount (default 50)...", 1)
+
+    -- Game display
+    local bjDisplayFrame = Instance.new("Frame", bjContent)
+    bjDisplayFrame.Size = UDim2.new(1, 0, 0, math.floor(120 * SF))
+    bjDisplayFrame.LayoutOrder = 2
+    bjDisplayFrame.BackgroundColor3 = Colors.Gunmetal_Dark; bjDisplayFrame.BackgroundTransparency = 0.1
+    bjDisplayFrame.BorderSizePixel = 0
+    Instance.new("UICorner", bjDisplayFrame).CornerRadius = UDim.new(0, math.floor(8 * SF))
+    Instance.new("UIStroke", bjDisplayFrame).Color = Colors.Red_Dim
+
+    local bjDealerLabel = Instance.new("TextLabel", bjDisplayFrame)
+    bjDealerLabel.Size = UDim2.new(1, -math.floor(16 * SF), 0, math.floor(20 * SF))
+    bjDealerLabel.Position = UDim2.new(0, math.floor(8 * SF), 0, math.floor(8 * SF))
+    bjDealerLabel.Text = "DEALER: —"; bjDealerLabel.TextColor3 = Colors.Red_Dim
+    bjDealerLabel.BackgroundTransparency = 1; bjDealerLabel.Font = Enum.Font.GothamBold
+    bjDealerLabel.TextSize = math.floor(11 * SF); bjDealerLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+    local bjDealerCards = Instance.new("TextLabel", bjDisplayFrame)
+    bjDealerCards.Size = UDim2.new(1, -math.floor(16 * SF), 0, math.floor(24 * SF))
+    bjDealerCards.Position = UDim2.new(0, math.floor(8 * SF), 0, math.floor(28 * SF))
+    bjDealerCards.Text = ""; bjDealerCards.TextColor3 = Colors.Red_Primary
+    bjDealerCards.BackgroundTransparency = 1; bjDealerCards.Font = Enum.Font.GothamBold
+    bjDealerCards.TextSize = math.floor(16 * SF); bjDealerCards.TextXAlignment = Enum.TextXAlignment.Left
+
+    local bjPlayerLabel = Instance.new("TextLabel", bjDisplayFrame)
+    bjPlayerLabel.Size = UDim2.new(1, -math.floor(16 * SF), 0, math.floor(20 * SF))
+    bjPlayerLabel.Position = UDim2.new(0, math.floor(8 * SF), 0, math.floor(58 * SF))
+    bjPlayerLabel.Text = "YOU: —"; bjPlayerLabel.TextColor3 = Colors.Red_Dim
+    bjPlayerLabel.BackgroundTransparency = 1; bjPlayerLabel.Font = Enum.Font.GothamBold
+    bjPlayerLabel.TextSize = math.floor(11 * SF); bjPlayerLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+    local bjPlayerCards = Instance.new("TextLabel", bjDisplayFrame)
+    bjPlayerCards.Size = UDim2.new(1, -math.floor(16 * SF), 0, math.floor(24 * SF))
+    bjPlayerCards.Position = UDim2.new(0, math.floor(8 * SF), 0, math.floor(78 * SF))
+    bjPlayerCards.Text = ""; bjPlayerCards.TextColor3 = Colors.Red_Primary
+    bjPlayerCards.BackgroundTransparency = 1; bjPlayerCards.Font = Enum.Font.GothamBold
+    bjPlayerCards.TextSize = math.floor(16 * SF); bjPlayerCards.TextXAlignment = Enum.TextXAlignment.Left
+
+    local bjResultLabel = Instance.new("TextLabel", bjContent)
+    bjResultLabel.Size = UDim2.new(1, 0, 0, math.floor(24 * SF))
+    bjResultLabel.LayoutOrder = 3
+    bjResultLabel.Text = "Place your bet and deal!"; bjResultLabel.TextColor3 = Colors.Red_Dim
+    bjResultLabel.BackgroundTransparency = 1; bjResultLabel.Font = Enum.Font.GothamBold
+    bjResultLabel.TextSize = math.floor(11 * SF)
+
+    local function bjUpdateDisplay(showDealerFull)
+        bjDealerLabel.Text = "DEALER: " .. (showDealerFull and handValue(bjDealerHand) or "?")
+        if showDealerFull then
+            bjDealerCards.Text = handToString(bjDealerHand)
+        else
+            bjDealerCards.Text = (#bjDealerHand > 0 and cardToString(bjDealerHand[1]) or "") .. " [?]"
+        end
+        bjPlayerLabel.Text = "YOU: " .. handValue(bjPlayerHand)
+        bjPlayerCards.Text = handToString(bjPlayerHand)
+    end
+
+    local function bjEndGame(result)
+        bjGameActive = false
+        bjUpdateDisplay(true)
+        local betAmt = bjBet
+
+        if result == "win" then
+            winSlaps(betAmt * 2)
+            bjResultLabel.Text = "🎉 YOU WIN! +" .. (betAmt * 2) .. " Slaps!"
+            bjResultLabel.TextColor3 = Color3.fromRGB(0, 220, 80)
+        elseif result == "blackjack" then
+            winSlaps(math.floor(betAmt * 2.5))
+            bjResultLabel.Text = "🎰 BLACKJACK! +" .. math.floor(betAmt * 2.5) .. " Slaps!"
+            bjResultLabel.TextColor3 = Color3.fromRGB(255, 215, 0)
+        elseif result == "push" then
+            casinoData.slaps = casinoData.slaps + betAmt
+            casinoData.gamesPlayed = casinoData.gamesPlayed + 1
+            updateBalance()
+            bjResultLabel.Text = "🤝 PUSH — Bet returned"
+            bjResultLabel.TextColor3 = Colors.Red_Dim
+        else
+            loseSlaps(0)
+            bjResultLabel.Text = "💀 BUST! Lost " .. betAmt .. " Slaps"
+            bjResultLabel.TextColor3 = Colors.Red_Primary
+        end
+        addLog("Blackjack: " .. bjResultLabel.Text, false)
+    end
+
+    -- Button row
+    local bjBtnRow = Instance.new("Frame", bjContent)
+    bjBtnRow.Size = UDim2.new(1, 0, 0, math.floor((isMobile and 42 or 34) * SF))
+    bjBtnRow.LayoutOrder = 4; bjBtnRow.BackgroundTransparency = 1
+    local bjBtnLayout = Instance.new("UIListLayout", bjBtnRow)
+    bjBtnLayout.FillDirection = Enum.FillDirection.Horizontal
+    bjBtnLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    bjBtnLayout.Padding = UDim.new(0, math.floor(4 * SF))
+
+    local function createGameBtn(parent, text, order, callback)
+        local btn = Instance.new("TextButton", parent)
+        btn.Size = UDim2.new(0.24, 0, 1, 0); btn.LayoutOrder = order
+        btn.Text = text; btn.TextColor3 = Colors.Red_Primary
+        btn.BackgroundColor3 = Colors.Gunmetal_Dark; btn.BackgroundTransparency = 0.3
+        btn.Font = Enum.Font.GothamBold; btn.TextSize = math.floor((isMobile and 11 or 10) * SF)
+        btn.BorderSizePixel = 0
+        Instance.new("UICorner", btn).CornerRadius = UDim.new(0, math.floor(6 * SF))
+        Instance.new("UIStroke", btn).Color = Colors.Red_Dim
+        if callback then btn.MouseButton1Click:Connect(callback) end
+        btn.MouseEnter:Connect(function() TweenService:Create(btn, TweenInfo.new(0.1), {BackgroundTransparency = 0.1}):Play() end)
+        btn.MouseLeave:Connect(function() TweenService:Create(btn, TweenInfo.new(0.1), {BackgroundTransparency = 0.3}):Play() end)
+        return btn
+    end
+
+    -- DEAL
+    createGameBtn(bjBtnRow, "DEAL", 1, function()
+        if bjGameActive then return end
+        local betStr = bjBetBox.Text:gsub("%s+", "")
+        bjBet = tonumber(betStr) or 50
+        bjBet = math.max(1, math.min(bjBet, casinoData.slaps))
+
+        if casinoData.slaps < bjBet then
+            bjResultLabel.Text = "⚠ Not enough Slaps!"; bjResultLabel.TextColor3 = Colors.Red_Primary
+            return
+        end
+
+        casinoData.slaps = casinoData.slaps - bjBet
+        updateBalance()
+
+        bjDeck = shuffleDeck(createDeck())
+        bjPlayerHand = {drawCard(bjDeck), drawCard(bjDeck)}
+        bjDealerHand = {drawCard(bjDeck), drawCard(bjDeck)}
+        bjGameActive = true
+        bjResultLabel.Text = "HIT or STAND? | Bet: " .. bjBet
+        bjResultLabel.TextColor3 = Colors.Red_Dim
+
+        -- Check for natural blackjack
+        if handValue(bjPlayerHand) == 21 then
+            bjEndGame("blackjack")
+            return
+        end
+
+        bjUpdateDisplay(false)
+    end)
+
+    -- HIT
+    createGameBtn(bjBtnRow, "HIT", 2, function()
+        if not bjGameActive then return end
+        table.insert(bjPlayerHand, drawCard(bjDeck))
+        bjUpdateDisplay(false)
+
+        if handValue(bjPlayerHand) > 21 then
+            bjEndGame("lose")
+        elseif handValue(bjPlayerHand) == 21 then
+            bjEndGame("win")
+        end
+    end)
+
+    -- STAND
+    createGameBtn(bjBtnRow, "STAND", 3, function()
+        if not bjGameActive then return end
+
+        -- Dealer draws until 17+
+        while handValue(bjDealerHand) < 17 do
+            table.insert(bjDealerHand, drawCard(bjDeck))
+        end
+
+        local pVal = handValue(bjPlayerHand)
+        local dVal = handValue(bjDealerHand)
+
+        if dVal > 21 then
+            bjEndGame("win")
+        elseif pVal > dVal then
+            bjEndGame("win")
+        elseif pVal == dVal then
+            bjEndGame("push")
+        else
+            bjEndGame("lose")
+        end
+    end)
+
+    -- DOUBLE
+    createGameBtn(bjBtnRow, "DOUBLE", 4, function()
+        if not bjGameActive then return end
+        if casinoData.slaps < bjBet then
+            bjResultLabel.Text = "⚠ Can't double!"; return
+        end
+        casinoData.slaps = casinoData.slaps - bjBet
+        bjBet = bjBet * 2
+        updateBalance()
+
+        table.insert(bjPlayerHand, drawCard(bjDeck))
+        bjUpdateDisplay(false)
+
+        if handValue(bjPlayerHand) > 21 then
+            bjEndGame("lose")
+            return
+        end
+
+        while handValue(bjDealerHand) < 17 do
+            table.insert(bjDealerHand, drawCard(bjDeck))
+        end
+
+        local pVal = handValue(bjPlayerHand)
+        local dVal = handValue(bjDealerHand)
+        if dVal > 21 then bjEndGame("win")
+        elseif pVal > dVal then bjEndGame("win")
+        elseif pVal == dVal then bjEndGame("push")
+        else bjEndGame("lose") end
+    end)
+
+    -- ============================================================================
+    -- GAME 2: ROULETTE (American — 0, 00, 1-36)
+    -- ============================================================================
+    local rlContent = createCasinoCollapsible(page, "🎰 AMERICAN ROULETTE", 2, false)
+
+    local rlReds = {1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36}
+    local rlRedSet = {}
+    for _, n in ipairs(rlReds) do rlRedSet[n] = true end
+
+    local _, rlBetBox = createTextInput(rlContent, "Bet amount (default 50)...", 1)
+
+    -- Bet type selection
+    local rlBetType = "Red"
+    local rlBetNumber = nil
+
+    local rlBetTypeLabel = Instance.new("TextLabel", rlContent)
+    rlBetTypeLabel.Size = UDim2.new(1, 0, 0, math.floor(18 * SF))
+    rlBetTypeLabel.LayoutOrder = 2
+    rlBetTypeLabel.Text = "BET TYPE: Red (2x)"; rlBetTypeLabel.TextColor3 = Colors.Red_Dim
+    rlBetTypeLabel.BackgroundTransparency = 1; rlBetTypeLabel.Font = Enum.Font.GothamBold
+    rlBetTypeLabel.TextSize = math.floor(10 * SF); rlBetTypeLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+    -- Bet type buttons
+    local rlTypeRow = Instance.new("Frame", rlContent)
+    rlTypeRow.Size = UDim2.new(1, 0, 0, math.floor((isMobile and 34 or 28) * SF))
+    rlTypeRow.LayoutOrder = 3; rlTypeRow.BackgroundTransparency = 1
+    local rlTypeLayout = Instance.new("UIListLayout", rlTypeRow)
+    rlTypeLayout.FillDirection = Enum.FillDirection.Horizontal
+    rlTypeLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    rlTypeLayout.Padding = UDim.new(0, math.floor(3 * SF))
+
+    local rlTypes = {
+        {name = "Red", payout = "2x"},
+        {name = "Black", payout = "2x"},
+        {name = "Odd", payout = "2x"},
+        {name = "Even", payout = "2x"},
+        {name = "1-18", payout = "2x"},
+        {name = "19-36", payout = "2x"},
+    }
+
+    for i, bt in ipairs(rlTypes) do
+        local btn = Instance.new("TextButton", rlTypeRow)
+        btn.Size = UDim2.new(1/#rlTypes, -3, 1, 0); btn.LayoutOrder = i
+        btn.Text = bt.name; btn.TextColor3 = Colors.Red_Dim
+        btn.BackgroundColor3 = Colors.Gunmetal_Dark; btn.BackgroundTransparency = 0.4
+        btn.Font = Enum.Font.GothamBold; btn.TextSize = math.floor((isMobile and 9 or 8) * SF)
+        btn.BorderSizePixel = 0
+        Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 3)
+        btn.MouseButton1Click:Connect(function()
+            rlBetType = bt.name; rlBetNumber = nil
+            rlBetTypeLabel.Text = "BET: " .. bt.name .. " (" .. bt.payout .. ")"
+            rlBetTypeLabel.TextColor3 = Colors.Red_Primary
+        end)
+    end
+
+    -- Straight number bet
+    local _, rlNumberBox = createTextInput(rlContent, "Straight bet # (0-36, 00) — 36x payout", 4)
+
+    local rlResultLabel = Instance.new("TextLabel", rlContent)
+    rlResultLabel.Size = UDim2.new(1, 0, 0, math.floor(28 * SF))
+    rlResultLabel.LayoutOrder = 5
+    rlResultLabel.Text = "🎰 Place your bet and SPIN!"
+    rlResultLabel.TextColor3 = Colors.Red_Dim; rlResultLabel.BackgroundTransparency = 1
+    rlResultLabel.Font = Enum.Font.GothamBold; rlResultLabel.TextSize = math.floor(12 * SF)
+
+    createButton(rlContent, "🎰  SPIN THE WHEEL!", 6, function()
+        local betStr = rlBetBox.Text:gsub("%s+", "")
+        local bet = tonumber(betStr) or 50
+        bet = math.max(1, math.min(bet, casinoData.slaps))
+
+        if casinoData.slaps < bet then
+            rlResultLabel.Text = "⚠ Not enough Slaps!"; return
+        end
+
+        -- Check for straight number bet
+        local numStr = rlNumberBox.Text:gsub("%s+", "")
+        if numStr ~= "" then
+            if numStr == "00" then
+                rlBetType = "Straight"; rlBetNumber = -1
+            else
+                local n = tonumber(numStr)
+                if n and n >= 0 and n <= 36 then
+                    rlBetType = "Straight"; rlBetNumber = n
+                end
+            end
+        end
+
+        casinoData.slaps = casinoData.slaps - bet
+        updateBalance()
+
+        -- Spin animation
+        rlResultLabel.Text = "🎰 SPINNING..."; rlResultLabel.TextColor3 = Colors.Red_Glow
+        task.spawn(function()
+            for i = 1, 15 do
+                local fakeNum = math.random(0, 37)
+                local display = fakeNum == 37 and "00" or tostring(fakeNum)
+                rlResultLabel.Text = "🎰 [ " .. display .. " ]"
+                task.wait(0.05 + i * 0.02)
+            end
+
+            -- Final result
+            local result = math.random(0, 37) -- 37 = 00
+            local resultDisplay = result == 37 and "00" or tostring(result)
+            local isRed = rlRedSet[result] or false
+            local isGreen = result == 0 or result == 37
+            local colorStr = isGreen and "GREEN" or (isRed and "RED" or "BLACK")
+
+            rlResultLabel.Text = "🎰 LANDED: " .. resultDisplay .. " (" .. colorStr .. ")"
+            rlResultLabel.TextColor3 = isGreen and Color3.fromRGB(0, 200, 80) or (isRed and Colors.Red_Primary or Colors.Red_Dim)
+
+            -- Check win
+            local won = false
+            local payout = 0
+
+            if rlBetType == "Straight" then
+                local target = rlBetNumber
+                if target == -1 and result == 37 then won = true; payout = bet * 36
+                elseif result == target then won = true; payout = bet * 36 end
+            elseif rlBetType == "Red" then
+                if isRed then won = true; payout = bet * 2 end
+            elseif rlBetType == "Black" then
+                if not isRed and not isGreen then won = true; payout = bet * 2 end
+            elseif rlBetType == "Odd" then
+                if result > 0 and result <= 36 and result % 2 == 1 then won = true; payout = bet * 2 end
+            elseif rlBetType == "Even" then
+                if result > 0 and result <= 36 and result % 2 == 0 then won = true; payout = bet * 2 end
+            elseif rlBetType == "1-18" then
+                if result >= 1 and result <= 18 then won = true; payout = bet * 2 end
+            elseif rlBetType == "19-36" then
+                if result >= 19 and result <= 36 then won = true; payout = bet * 2 end
+            end
+
+            task.wait(0.5)
+            if won then
+                winSlaps(payout)
+                rlResultLabel.Text = rlResultLabel.Text .. " — WIN +" .. payout .. "!"
+                addLog("Roulette WIN: " .. resultDisplay .. " +" .. payout, false)
+            else
+                loseSlaps(0)
+                rlResultLabel.Text = rlResultLabel.Text .. " — LOST " .. bet
+                addLog("Roulette LOSS: " .. resultDisplay .. " -" .. bet, false)
+            end
+        end)
+    end)
+
+    -- ============================================================================
+    -- GAME 3: TEXAS HOLD'EM (Simplified — vs Dealer)
+    -- ============================================================================
+    local thContent = createCasinoCollapsible(page, "🤠 TEXAS HOLD'EM (vs Dealer)", 3, false)
+
+    local thState = {active = false, phase = "preflop", pot = 0, bet = 0}
+    local thDeck = {}
+    local thPlayerHand = {}
+    local thDealerHand = {}
+    local thCommunity = {}
+
+    local _, thBetBox = createTextInput(thContent, "Ante amount (default 50)...", 1)
+
+    local thDisplay = Instance.new("Frame", thContent)
+    thDisplay.Size = UDim2.new(1, 0, 0, math.floor(140 * SF))
+    thDisplay.LayoutOrder = 2; thDisplay.BackgroundColor3 = Colors.Gunmetal_Dark
+    thDisplay.BackgroundTransparency = 0.1; thDisplay.BorderSizePixel = 0
+    Instance.new("UICorner", thDisplay).CornerRadius = UDim.new(0, math.floor(8 * SF))
+    Instance.new("UIStroke", thDisplay).Color = Colors.Red_Dim
+
+    local thCommunityLabel = Instance.new("TextLabel", thDisplay)
+    thCommunityLabel.Size = UDim2.new(1, -math.floor(16 * SF), 0, math.floor(16 * SF))
+    thCommunityLabel.Position = UDim2.new(0, math.floor(8 * SF), 0, math.floor(6 * SF))
+    thCommunityLabel.Text = "COMMUNITY:"; thCommunityLabel.TextColor3 = Colors.Red_Dim
+    thCommunityLabel.BackgroundTransparency = 1; thCommunityLabel.Font = Enum.Font.GothamBold
+    thCommunityLabel.TextSize = math.floor(9 * SF); thCommunityLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+    local thCommunityCards = Instance.new("TextLabel", thDisplay)
+    thCommunityCards.Size = UDim2.new(1, -math.floor(16 * SF), 0, math.floor(26 * SF))
+    thCommunityCards.Position = UDim2.new(0, math.floor(8 * SF), 0, math.floor(22 * SF))
+    thCommunityCards.Text = "— — — — —"; thCommunityCards.TextColor3 = Colors.Red_Primary
+    thCommunityCards.BackgroundTransparency = 1; thCommunityCards.Font = Enum.Font.GothamBold
+    thCommunityCards.TextSize = math.floor(16 * SF); thCommunityCards.TextXAlignment = Enum.TextXAlignment.Left
+
+    local thDealerLabel = Instance.new("TextLabel", thDisplay)
+    thDealerLabel.Size = UDim2.new(1, -math.floor(16 * SF), 0, math.floor(16 * SF))
+    thDealerLabel.Position = UDim2.new(0, math.floor(8 * SF), 0, math.floor(54 * SF))
+    thDealerLabel.Text = "DEALER:"; thDealerLabel.TextColor3 = Colors.Red_Dim
+    thDealerLabel.BackgroundTransparency = 1; thDealerLabel.Font = Enum.Font.GothamBold
+    thDealerLabel.TextSize = math.floor(9 * SF); thDealerLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+    local thDealerCards = Instance.new("TextLabel", thDisplay)
+    thDealerCards.Size = UDim2.new(1, -math.floor(16 * SF), 0, math.floor(22 * SF))
+    thDealerCards.Position = UDim2.new(0, math.floor(8 * SF), 0, math.floor(68 * SF))
+    thDealerCards.Text = "[?] [?]"; thDealerCards.TextColor3 = Colors.Red_Primary
+    thDealerCards.BackgroundTransparency = 1; thDealerCards.Font = Enum.Font.GothamBold
+    thDealerCards.TextSize = math.floor(14 * SF); thDealerCards.TextXAlignment = Enum.TextXAlignment.Left
+
+    local thPlayerLabel = Instance.new("TextLabel", thDisplay)
+    thPlayerLabel.Size = UDim2.new(1, -math.floor(16 * SF), 0, math.floor(16 * SF))
+    thPlayerLabel.Position = UDim2.new(0, math.floor(8 * SF), 0, math.floor(96 * SF))
+    thPlayerLabel.Text = "YOUR HAND:"; thPlayerLabel.TextColor3 = Colors.Red_Dim
+    thPlayerLabel.BackgroundTransparency = 1; thPlayerLabel.Font = Enum.Font.GothamBold
+    thPlayerLabel.TextSize = math.floor(9 * SF); thPlayerLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+    local thPlayerCards = Instance.new("TextLabel", thDisplay)
+    thPlayerCards.Size = UDim2.new(1, -math.floor(16 * SF), 0, math.floor(22 * SF))
+    thPlayerCards.Position = UDim2.new(0, math.floor(8 * SF), 0, math.floor(112 * SF))
+    thPlayerCards.Text = ""; thPlayerCards.TextColor3 = Colors.Red_Primary
+    thPlayerCards.BackgroundTransparency = 1; thPlayerCards.Font = Enum.Font.GothamBold
+    thPlayerCards.TextSize = math.floor(14 * SF); thPlayerCards.TextXAlignment = Enum.TextXAlignment.Left
+
+    local thResultLabel = Instance.new("TextLabel", thContent)
+    thResultLabel.Size = UDim2.new(1, 0, 0, math.floor(24 * SF)); thResultLabel.LayoutOrder = 3
+    thResultLabel.Text = "Ante up and play!"; thResultLabel.TextColor3 = Colors.Red_Dim
+    thResultLabel.BackgroundTransparency = 1; thResultLabel.Font = Enum.Font.GothamBold
+    thResultLabel.TextSize = math.floor(11 * SF)
+
+    -- Simple hand evaluation (pair, two pair, etc.)
+    local function evaluatePokerHand(cards)
+        local rankCounts = {}
+        local suitCounts = {}
+        local values = {}
+        for _, c in ipairs(cards) do
+            rankCounts[c.rank] = (rankCounts[c.rank] or 0) + 1
+            suitCounts[c.suit] = (suitCounts[c.suit] or 0) + 1
+            local v = rankValues[c.rank]
+            if c.rank == "A" then v = 14 end
+            table.insert(values, v)
+        end
+        table.sort(values)
+
+        local pairs, threes, fours = 0, 0, 0
+        local highCard = values[#values]
+        for _, count in pairs(rankCounts) do
+            if count == 2 then pairs = pairs + 1
+            elseif count == 3 then threes = threes + 1
+            elseif count == 4 then fours = fours + 1 end
+        end
+
+        local isFlush = false
+        for _, count in pairs(suitCounts) do
+            if count >= 5 then isFlush = true end
+        end
+
+        local isStraight = false
+        if #values >= 5 then
+            local unique = {}
+            local seen = {}
+            for _, v in ipairs(values) do
+                if not seen[v] then table.insert(unique, v); seen[v] = true end
+            end
+            table.sort(unique)
+            for i = 1, #unique - 4 do
+                if unique[i+4] - unique[i] == 4 then isStraight = true end
+            end
+            -- Ace-low straight
+            if seen[14] and seen[2] and seen[3] and seen[4] and seen[5] then isStraight = true end
+        end
+
+        -- Score (higher = better)
+        if isStraight and isFlush then return 800 + highCard, "Straight Flush"
+        elseif fours > 0 then return 700 + highCard, "Four of a Kind"
+        elseif threes > 0 and pairs > 0 then return 600 + highCard, "Full House"
+        elseif isFlush then return 500 + highCard, "Flush"
+        elseif isStraight then return 400 + highCard, "Straight"
+        elseif threes > 0 then return 300 + highCard, "Three of a Kind"
+        elseif pairs >= 2 then return 200 + highCard, "Two Pair"
+        elseif pairs == 1 then return 100 + highCard, "Pair"
+        else return highCard, "High Card" end
+    end
+
+    -- Buttons
+    local thBtnRow = Instance.new("Frame", thContent)
+    thBtnRow.Size = UDim2.new(1, 0, 0, math.floor((isMobile and 42 or 34) * SF))
+    thBtnRow.LayoutOrder = 4; thBtnRow.BackgroundTransparency = 1
+    local thBtnLayout = Instance.new("UIListLayout", thBtnRow)
+    thBtnLayout.FillDirection = Enum.FillDirection.Horizontal
+    thBtnLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    thBtnLayout.Padding = UDim.new(0, math.floor(4 * SF))
+
+    -- DEAL (Ante)
+    createGameBtn(thBtnRow, "ANTE", 1, function()
+        if thState.active then return end
+        local betStr = thBetBox.Text:gsub("%s+", "")
+        thState.bet = tonumber(betStr) or 50
+        thState.bet = math.max(1, math.min(thState.bet, casinoData.slaps))
+
+        if casinoData.slaps < thState.bet then
+            thResultLabel.Text = "⚠ Not enough!"; return
+        end
+
+        casinoData.slaps = casinoData.slaps - thState.bet
+        thState.pot = thState.bet
+        updateBalance()
+
+        thDeck = shuffleDeck(createDeck())
+        thPlayerHand = {drawCard(thDeck), drawCard(thDeck)}
+        thDealerHand = {drawCard(thDeck), drawCard(thDeck)}
+        thCommunity = {}
+        thState.active = true; thState.phase = "preflop"
+
+        thPlayerCards.Text = handToString(thPlayerHand)
+        thDealerCards.Text = "[?] [?]"
+        thCommunityCards.Text = "— — — — —"
+        thResultLabel.Text = "CALL (bet again) or FOLD? | Pot: " .. thState.pot
+        thResultLabel.TextColor3 = Colors.Red_Dim
+    end)
+
+    -- CALL (advances phase)
+    createGameBtn(thBtnRow, "CALL", 2, function()
+        if not thState.active then return end
+
+        if thState.phase == "preflop" then
+            -- Flop: deal 3 community cards
+            if casinoData.slaps < thState.bet then thResultLabel.Text = "⚠ Can't call!"; return end
+            casinoData.slaps = casinoData.slaps - thState.bet
+            thState.pot = thState.pot + thState.bet
+            updateBalance()
+
+            for i = 1, 3 do table.insert(thCommunity, drawCard(thDeck)) end
+            thCommunityCards.Text = handToString(thCommunity) .. " — —"
+            thState.phase = "flop"
+            thResultLabel.Text = "Flop dealt! CALL or FOLD? | Pot: " .. thState.pot
+        elseif thState.phase == "flop" then
+            -- Turn
+            table.insert(thCommunity, drawCard(thDeck))
+            thCommunityCards.Text = handToString(thCommunity) .. " —"
+            thState.phase = "turn"
+            thResultLabel.Text = "Turn dealt! CALL or FOLD? | Pot: " .. thState.pot
+        elseif thState.phase == "turn" then
+            -- River + showdown
+            table.insert(thCommunity, drawCard(thDeck))
+            thCommunityCards.Text = handToString(thCommunity)
+            thDealerCards.Text = handToString(thDealerHand)
+            thState.phase = "river"
+
+            -- Evaluate
+            local allPlayerCards = {}
+            for _, c in ipairs(thPlayerHand) do table.insert(allPlayerCards, c) end
+            for _, c in ipairs(thCommunity) do table.insert(allPlayerCards, c) end
+
+            local allDealerCards = {}
+            for _, c in ipairs(thDealerHand) do table.insert(allDealerCards, c) end
+            for _, c in ipairs(thCommunity) do table.insert(allDealerCards, c) end
+
+            local pScore, pHand = evaluatePokerHand(allPlayerCards)
+            local dScore, dHand = evaluatePokerHand(allDealerCards)
+
+            thState.active = false
+
+            if pScore > dScore then
+                winSlaps(thState.pot * 2)
+                thResultLabel.Text = "🎉 WIN! " .. pHand .. " vs " .. dHand .. " +" .. (thState.pot * 2)
+                thResultLabel.TextColor3 = Color3.fromRGB(0, 220, 80)
+            elseif pScore == dScore then
+                casinoData.slaps = casinoData.slaps + thState.pot
+                updateBalance()
+                thResultLabel.Text = "🤝 TIE! " .. pHand .. " — Pot returned"
+                thResultLabel.TextColor3 = Colors.Red_Dim
+            else
+                loseSlaps(0)
+                thResultLabel.Text = "💀 LOSS! " .. pHand .. " vs " .. dHand .. " -" .. thState.pot
+                thResultLabel.TextColor3 = Colors.Red_Primary
+            end
+            addLog("Hold'em: " .. thResultLabel.Text, false)
+        end
+    end)
+
+    -- FOLD
+    createGameBtn(thBtnRow, "FOLD", 3, function()
+        if not thState.active then return end
+        thState.active = false
+        thDealerCards.Text = handToString(thDealerHand)
+        loseSlaps(0)
+        thResultLabel.Text = "💀 FOLDED — Lost " .. thState.pot .. " Slaps"
+        thResultLabel.TextColor3 = Colors.Red_Primary
+        addLog("Hold'em: Folded, lost " .. thState.pot, false)
+    end)
+
+    -- ALL IN
+    createGameBtn(thBtnRow, "ALL IN", 4, function()
+        if not thState.active then return end
+        local allIn = casinoData.slaps
+        casinoData.slaps = 0
+        thState.pot = thState.pot + allIn
+        updateBalance()
+
+        -- Deal remaining community cards
+        while #thCommunity < 5 do table.insert(thCommunity, drawCard(thDeck)) end
+        thCommunityCards.Text = handToString(thCommunity)
+        thDealerCards.Text = handToString(thDealerHand)
+
+        local allPlayerCards = {}
+        for _, c in ipairs(thPlayerHand) do table.insert(allPlayerCards, c) end
+        for _, c in ipairs(thCommunity) do table.insert(allPlayerCards, c) end
+        local allDealerCards = {}
+        for _, c in ipairs(thDealerHand) do table.insert(allDealerCards, c) end
+        for _, c in ipairs(thCommunity) do table.insert(allDealerCards, c) end
+
+        local pScore, pHand = evaluatePokerHand(allPlayerCards)
+        local dScore, dHand = evaluatePokerHand(allDealerCards)
+        thState.active = false
+
+        if pScore > dScore then
+            winSlaps(thState.pot * 2)
+            thResultLabel.Text = "🎰 ALL IN WIN! " .. pHand .. " +" .. (thState.pot * 2)
+            thResultLabel.TextColor3 = Color3.fromRGB(255, 215, 0)
+        elseif pScore == dScore then
+            casinoData.slaps = casinoData.slaps + thState.pot
+            updateBalance()
+            thResultLabel.Text = "🤝 TIE — Pot returned"
+            thResultLabel.TextColor3 = Colors.Red_Dim
+        else
+            loseSlaps(0)
+            thResultLabel.Text = "💀 ALL IN LOSS! " .. dHand .. " beats " .. pHand
+            thResultLabel.TextColor3 = Colors.Red_Primary
+        end
+        addLog("Hold'em ALL IN: " .. thResultLabel.Text, false)
+    end)
+end
+
+-- ============================================================================
+-- TAB: KITCHEN (Alchemist Glove — Potions, Ingredients, Cauldron)
+-- ============================================================================
+do
+    local page = tabPages["Kitchen"]
+
+    -- ============================================================================
+    -- ALCHEMIST REMOTE TRACKING
+    -- ============================================================================
+    local networkFolder = nil
+    local alchemistEventRemote = nil
+    local alchemistEquipped = false
+    local cauldronSpawned = false
+    local kitchenVisible = false
+
+    pcall(function()
+        networkFolder = ReplicatedStorage:WaitForChild("_NETWORK", 5)
+    end)
+    pcall(function()
+        alchemistEventRemote = ReplicatedStorage:WaitForChild("AlchemistEvent", 5)
+    end)
+
+    -- Track the changing remote names in _NETWORK
+    local function findNetworkRemote()
+        if not networkFolder then return nil end
+        for _, child in ipairs(networkFolder:GetChildren()) do
+            if child.Name:sub(1, 1) == "{" and child.Name:sub(-1, -1) == "}" then
+                return child
+            end
+        end
+        return nil
+    end
+
+    -- Equip Alchemist glove
+    local function equipAlchemist()
+        local remote = findNetworkRemote()
+        if remote then
+            pcall(function()
+                remote:FireServer("Alchemist")
+            end)
+            addLog("Kitchen: Equipped Alchemist via " .. remote.Name, false)
+            return true
+        else
+            addLog("Kitchen: No _NETWORK remote found!", true)
+            return false
+        end
+    end
+
+    -- Spawn cauldron
+    local function spawnCauldron()
+        pcall(function()
+            if generalAbilityRemote then
+                generalAbilityRemote:FireServer()
+            end
+        end)
+        addLog("Kitchen: Cauldron spawned", false)
+    end
+
+    -- ============================================================================
+    -- INGREDIENT SYSTEM
+    -- ============================================================================
+    local ingredients = {
+        {name = "Autumn Sprout", perGrab = 5, count = 0},
+        {name = "Blood Rose", perGrab = 5, count = 0},
+        {name = "Blue Crystal", perGrab = 5, count = 0},
+        {name = "Cake Mix", perGrab = 1, count = 0},
+        {name = "Dark Root", perGrab = 5, count = 0},
+        {name = "Dire Flower", perGrab = 5, count = 0},
+        {name = "Elder Wood", perGrab = 5, count = 0},
+        {name = "Fire Flower", perGrab = 5, count = 0},
+        {name = "Glowing Mushroom", perGrab = 5, count = 0},
+        {name = "Hazel Lily", perGrab = 5, count = 0},
+        {name = "Jade Stone", perGrab = 5, count = 0},
+        {name = "Lamp Grass", perGrab = 5, count = 0},
+        {name = "Mushroom", perGrab = 5, count = 0},
+        {name = "Plane Flower", perGrab = 5, count = 0},
+        {name = "Red Crystal", perGrab = 5, count = 0},
+        {name = "Wild Vine", perGrab = 5, count = 0},
+        {name = "Winter Rose", perGrab = 5, count = 0},
+    }
+
+    -- Save/load ingredient counts
+    local SAVE_KEY_KITCHEN = "SlapTerminal_Kitchen_v1"
+    local function saveKitchen()
+        pcall(function()
+            if writefile then
+                local data = {}
+                for _, ing in ipairs(ingredients) do data[ing.name] = ing.count end
+                writefile(SAVE_KEY_KITCHEN .. ".json", HttpService:JSONEncode(data))
+            end
+        end)
+    end
+
+    local function loadKitchen()
+        pcall(function()
+            if readfile and isfile and isfile(SAVE_KEY_KITCHEN .. ".json") then
+                local data = HttpService:JSONDecode(readfile(SAVE_KEY_KITCHEN .. ".json"))
+                for _, ing in ipairs(ingredients) do
+                    if data[ing.name] then ing.count = data[ing.name] end
+                end
+            end
+        end)
+    end
+
+    loadKitchen()
+
+    local function grabIngredient(ingredientName)
+        pcall(function()
+            if alchemistEventRemote then
+                alchemistEventRemote:FireServer("AddItem", ingredientName)
+            end
+        end)
+        -- Update local count
+        for _, ing in ipairs(ingredients) do
+            if ing.name == ingredientName then
+                ing.count = ing.count + ing.perGrab
+                break
+            end
+        end
+        saveKitchen()
+        addLog("Kitchen: Grabbed " .. ingredientName, false)
+    end
+
+    -- ============================================================================
+    -- POTION RECIPES (placeholder — user will provide decals later)
+    -- ============================================================================
+    local potionRecipes = {
+        {name = "Health Potion", ingredients = {{"Blood Rose", 5}, {"Mushroom", 5}}, description = "Restores health"},
+        {name = "Speed Potion", ingredients = {{"Lamp Grass", 5}, {"Wild Vine", 5}}, description = "Increases speed"},
+        {name = "Fire Potion", ingredients = {{"Fire Flower", 5}, {"Red Crystal", 5}}, description = "Fire damage"},
+        {name = "Ice Potion", ingredients = {{"Winter Rose", 5}, {"Blue Crystal", 5}}, description = "Freezing effect"},
+        {name = "Shadow Potion", ingredients = {{"Dark Root", 5}, {"Dire Flower", 5}}, description = "Invisibility"},
+        {name = "Earth Potion", ingredients = {{"Jade Stone", 5}, {"Elder Wood", 5}}, description = "Earth shield"},
+        {name = "Autumn Brew", ingredients = {{"Autumn Sprout", 5}, {"Hazel Lily", 5}}, description = "Seasonal buff"},
+        {name = "Glow Potion", ingredients = {{"Glowing Mushroom", 5}, {"Plane Flower", 5}}, description = "Glowing aura"},
+        {name = "Cake Potion", ingredients = {{"Cake Mix", 1}, {"Mushroom", 5}}, description = "Sweet surprise"},
+        {name = "Elder Elixir", ingredients = {{"Elder Wood", 10}, {"Dark Root", 10}, {"Blood Rose", 5}}, description = "Powerful elixir"},
+        {name = "Crystal Fusion", ingredients = {{"Red Crystal", 5}, {"Blue Crystal", 5}, {"Jade Stone", 5}}, description = "Crystal energy"},
+        {name = "Mega Brew", ingredients = {{"Fire Flower", 10}, {"Winter Rose", 10}, {"Glowing Mushroom", 10}}, description = "Ultimate potion"},
+    }
+
+    -- ============================================================================
+    -- COLLAPSIBLE HELPER
+    -- ============================================================================
+    local function createKitchenCollapsible(parent, titleText, layoutOrder, defaultOpen)
+        local container = Instance.new("Frame", parent)
+        container.Size = UDim2.new(1, 0, 0, 0); container.LayoutOrder = layoutOrder
+        container.BackgroundTransparency = 1; container.AutomaticSize = Enum.AutomaticSize.Y
+        local secLayout = Instance.new("UIListLayout", container)
+        secLayout.SortOrder = Enum.SortOrder.LayoutOrder; secLayout.Padding = UDim.new(0, math.floor(4 * SF))
+        local headerBtn = Instance.new("TextButton", container)
+        headerBtn.Size = UDim2.new(1, 0, 0, math.floor((isMobile and 36 or 30) * SF)); headerBtn.LayoutOrder = 0
+        headerBtn.Text = (defaultOpen and "▼ " or "▶ ") .. titleText
+        headerBtn.TextColor3 = Colors.Red_Primary; headerBtn.BackgroundColor3 = Colors.Gunmetal_Mid
+        headerBtn.BackgroundTransparency = 0.2; headerBtn.Font = Enum.Font.GothamBold
+        headerBtn.TextSize = math.floor((isMobile and 12 or 11) * SF); headerBtn.TextXAlignment = Enum.TextXAlignment.Left
+        headerBtn.BorderSizePixel = 0
+        Instance.new("UICorner", headerBtn).CornerRadius = UDim.new(0, math.floor(6 * SF))
+        Instance.new("UIStroke", headerBtn).Color = Colors.Red_Dim
+        Instance.new("UIPadding", headerBtn).PaddingLeft = UDim.new(0, math.floor(10 * SF))
+        local content = Instance.new("Frame", container)
+        content.Name = "Content"; content.Size = UDim2.new(1, 0, 0, 0); content.LayoutOrder = 1
+        content.BackgroundTransparency = 1; content.AutomaticSize = Enum.AutomaticSize.Y
+        content.Visible = defaultOpen or false
+        Instance.new("UIListLayout", content).SortOrder = Enum.SortOrder.LayoutOrder
+        content:FindFirstChildOfClass("UIListLayout").Padding = UDim.new(0, math.floor(4 * SF))
+        local isOpen = defaultOpen or false
+        headerBtn.MouseButton1Click:Connect(function()
+            isOpen = not isOpen; content.Visible = isOpen
+            headerBtn.Text = (isOpen and "▼ " or "▶ ") .. titleText
+        end)
+        headerBtn.MouseEnter:Connect(function() TweenService:Create(headerBtn, TweenInfo.new(0.15), {BackgroundTransparency = 0.05}):Play() end)
+        headerBtn.MouseLeave:Connect(function() TweenService:Create(headerBtn, TweenInfo.new(0.15), {BackgroundTransparency = 0.2}):Play() end)
+        return content
+    end
+
+    -- ============================================================================
+    -- SECTION 1: SETUP (Equip + Cauldron)
+    -- ============================================================================
+    local setupContent = createKitchenCollapsible(page, "⚗ KITCHEN SETUP", 1, true)
+
+    local setupStatusFrame = Instance.new("Frame", setupContent)
+    setupStatusFrame.Size = UDim2.new(1, 0, 0, math.floor(50 * SF)); setupStatusFrame.LayoutOrder = 1
+    setupStatusFrame.BackgroundColor3 = Colors.Gunmetal_Mid; setupStatusFrame.BackgroundTransparency = 0.2
+    setupStatusFrame.BorderSizePixel = 0
+    Instance.new("UICorner", setupStatusFrame).CornerRadius = UDim.new(0, math.floor(8 * SF))
+
+    local setupDot = Instance.new("Frame", setupStatusFrame)
+    setupDot.Size = UDim2.new(0, math.floor(8 * SF), 0, math.floor(8 * SF))
+    setupDot.Position = UDim2.new(0, math.floor(8 * SF), 0, math.floor(8 * SF))
+    setupDot.BackgroundColor3 = Colors.Red_Dim; setupDot.BorderSizePixel = 0
+    Instance.new("UICorner", setupDot).CornerRadius = UDim.new(1, 0)
+
+    local setupLabel = Instance.new("TextLabel", setupStatusFrame)
+    setupLabel.Size = UDim2.new(1, -math.floor(24 * SF), 0, math.floor(14 * SF))
+    setupLabel.Position = UDim2.new(0, math.floor(22 * SF), 0, math.floor(4 * SF))
+    setupLabel.Text = "KITCHEN: NOT READY"; setupLabel.TextColor3 = Colors.Red_Dim
+    setupLabel.BackgroundTransparency = 1; setupLabel.Font = Enum.Font.GothamBold
+    setupLabel.TextSize = math.floor(10 * SF); setupLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+    local setupInfoLabel = Instance.new("TextLabel", setupStatusFrame)
+    setupInfoLabel.Size = UDim2.new(1, -math.floor(12 * SF), 0, math.floor(12 * SF))
+    setupInfoLabel.Position = UDim2.new(0, math.floor(8 * SF), 0, math.floor(22 * SF))
+    setupInfoLabel.Text = "Equip Alchemist glove, then spawn cauldron"
+    setupInfoLabel.TextColor3 = Colors.Gunmetal_Accent; setupInfoLabel.BackgroundTransparency = 1
+    setupInfoLabel.Font = Enum.Font.Code; setupInfoLabel.TextSize = math.floor(7 * SF)
+    setupInfoLabel.TextXAlignment = Enum.TextXAlignment.Left; setupInfoLabel.TextWrapped = true
+
+    -- Network remote monitor
+    local networkLabel = Instance.new("TextLabel", setupStatusFrame)
+    networkLabel.Size = UDim2.new(1, -math.floor(12 * SF), 0, math.floor(10 * SF))
+    networkLabel.Position = UDim2.new(0, math.floor(8 * SF), 0, math.floor(36 * SF))
+    networkLabel.Text = "_NETWORK: Scanning..."; networkLabel.TextColor3 = Colors.Gunmetal_Accent
+    networkLabel.BackgroundTransparency = 1; networkLabel.Font = Enum.Font.Code
+    networkLabel.TextSize = math.floor(6 * SF); networkLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+    -- Monitor _NETWORK folder for remote changes
+    task.spawn(function()
+        while true do
+            local remote = findNetworkRemote()
+            if remote then
+                networkLabel.Text = "_NETWORK: " .. remote.Name .. " (" .. remote.ClassName .. ")"
+            else
+                networkLabel.Text = "_NETWORK: No {remote} found"
+            end
+            task.wait(1)
+        end
+    end)
+
+    -- Equip button
+    createButton(setupContent, "⚗  EQUIP ALCHEMIST GLOVE", 2, function()
+        setupLabel.Text = "EQUIPPING..."; setupLabel.TextColor3 = Colors.Red_Glow
+        setupDot.BackgroundColor3 = Colors.Red_Glow
+
+        local success = equipAlchemist()
+
+        if success then
+            alchemistEquipped = true
+            setupLabel.Text = "ALCHEMIST: EQUIPPED ✓"
+            setupLabel.TextColor3 = Colors.Red_Primary
+            setupDot.BackgroundColor3 = Colors.Red_Primary
+            setupInfoLabel.Text = "Now spawn the cauldron!"
+        else
+            setupLabel.Text = "EQUIP FAILED ✗"
+            setupLabel.TextColor3 = Colors.Red_Primary
+            setupInfoLabel.Text = "Check _NETWORK folder"
+        end
+    end)
+
+    -- Spawn cauldron button
+    createButton(setupContent, "🪄  SPAWN CAULDRON", 3, function()
+        spawnCauldron()
+        cauldronSpawned = true
+        kitchenVisible = true
+        setupLabel.Text = "KITCHEN: READY ✓"
+        setupLabel.TextColor3 = Colors.Red_Primary
+        setupDot.BackgroundColor3 = Color3.fromRGB(0, 200, 80)
+        setupInfoLabel.Text = "Cauldron spawned! Kitchen is open!"
+        addLog("Kitchen: Fully operational", false)
+    end)
+
+    -- ============================================================================
+    -- SECTION 2: INGREDIENT INVENTORY
+    -- ============================================================================
+    local invContent = createKitchenCollapsible(page, "🧪 INGREDIENT INVENTORY", 2, true)
+
+    local ingredientContainer = Instance.new("Frame", invContent)
+    ingredientContainer.Size = UDim2.new(1, 0, 0, 0); ingredientContainer.LayoutOrder = 1
+    ingredientContainer.BackgroundTransparency = 1; ingredientContainer.AutomaticSize = Enum.AutomaticSize.Y
+
+    local ingGrid = Instance.new("UIGridLayout", ingredientContainer)
+    local ingCellH = isMobile and math.floor(56 * SF) or math.floor(46 * SF)
+    ingGrid.CellSize = UDim2.new(0.48, 0, 0, ingCellH)
+    ingGrid.CellPadding = UDim2.new(0.02, 0, 0, math.floor(4 * SF))
+    ingGrid.SortOrder = Enum.SortOrder.LayoutOrder
+    ingGrid.FillDirectionMaxCells = 2
+
+    local ingredientLabels = {}
+
+    local function refreshIngredientDisplay()
+        for name, data in pairs(ingredientLabels) do
+            for _, ing in ipairs(ingredients) do
+                if ing.name == name then
+                    data.countLabel.Text = tostring(ing.count)
+                    break
+                end
+            end
+        end
+    end
+
+    for i, ing in ipairs(ingredients) do
+        local ingFrame = Instance.new("Frame", ingredientContainer)
+        ingFrame.LayoutOrder = i
+        ingFrame.BackgroundColor3 = Colors.Gunmetal_Mid; ingFrame.BackgroundTransparency = 0.3
+        ingFrame.BorderSizePixel = 0
+        Instance.new("UICorner", ingFrame).CornerRadius = UDim.new(0, math.floor(6 * SF))
+
+        -- Name
+        local nameLabel = Instance.new("TextLabel", ingFrame)
+        nameLabel.Size = UDim2.new(0.55, 0, 0, math.floor(14 * SF))
+        nameLabel.Position = UDim2.new(0, math.floor(6 * SF), 0, math.floor(4 * SF))
+        nameLabel.Text = ing.name; nameLabel.TextColor3 = Colors.Red_Dim
+        nameLabel.BackgroundTransparency = 1; nameLabel.Font = Enum.Font.GothamBold
+        nameLabel.TextSize = math.floor((isMobile and 8 or 7) * SF)
+        nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+        nameLabel.TextWrapped = true; nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
+
+        -- Count
+        local countLabel = Instance.new("TextLabel", ingFrame)
+        countLabel.Size = UDim2.new(0, math.floor(30 * SF), 0, math.floor(14 * SF))
+        countLabel.Position = UDim2.new(1, -(math.floor(36 * SF)), 0, math.floor(4 * SF))
+        countLabel.Text = tostring(ing.count); countLabel.TextColor3 = Colors.Red_Primary
+        countLabel.BackgroundTransparency = 1; countLabel.Font = Enum.Font.GothamBold
+        countLabel.TextSize = math.floor(10 * SF)
+
+        -- Per grab info
+        local perLabel = Instance.new("TextLabel", ingFrame)
+        perLabel.Size = UDim2.new(1, -math.floor(12 * SF), 0, math.floor(10 * SF))
+        perLabel.Position = UDim2.new(0, math.floor(6 * SF), 0, math.floor(19 * SF))
+        perLabel.Text = "+" .. ing.perGrab .. "/grab"; perLabel.TextColor3 = Colors.Gunmetal_Accent
+        perLabel.BackgroundTransparency = 1; perLabel.Font = Enum.Font.Code
+        perLabel.TextSize = math.floor(6 * SF); perLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+        -- Grab button
+        local grabBtnH = isMobile and math.floor(20 * SF) or math.floor(16 * SF)
+        local grabBtn = Instance.new("TextButton", ingFrame)
+        grabBtn.Size = UDim2.new(0.9, 0, 0, grabBtnH)
+        grabBtn.Position = UDim2.new(0.05, 0, 1, -(grabBtnH + math.floor(3 * SF)))
+        grabBtn.Text = "GRAB +" .. ing.perGrab; grabBtn.TextColor3 = Colors.Red_Primary
+        grabBtn.BackgroundColor3 = Colors.Gunmetal_Dark; grabBtn.BackgroundTransparency = 0.3
+        grabBtn.Font = Enum.Font.GothamBold; grabBtn.TextSize = math.floor((isMobile and 8 or 7) * SF)
+        grabBtn.BorderSizePixel = 0
+        Instance.new("UICorner", grabBtn).CornerRadius = UDim.new(0, 3)
+
+        grabBtn.MouseButton1Click:Connect(function()
+            grabIngredient(ing.name)
+            countLabel.Text = tostring(ing.count)
+
+            -- Flash feedback
+            TweenService:Create(grabBtn, TweenInfo.new(0.1), {BackgroundColor3 = Colors.Red_Deep}):Play()
+            task.wait(0.1)
+            TweenService:Create(grabBtn, TweenInfo.new(0.2), {BackgroundColor3 = Colors.Gunmetal_Dark}):Play()
+        end)
+
+        ingredientLabels[ing.name] = {countLabel = countLabel}
+    end
+
+    -- Grab All button
+    createButton(invContent, "🧪  GRAB ALL INGREDIENTS", 2, function()
+        addLog("Kitchen: Grabbing all ingredients...", false)
+        for _, ing in ipairs(ingredients) do
+            grabIngredient(ing.name)
+            task.wait(0.1)
+        end
+        refreshIngredientDisplay()
+        addLog("Kitchen: All ingredients grabbed!", false)
+    end)
+
+    -- Grab x10 button
+    createButton(invContent, "🧪  GRAB ALL x10", 3, function()
+        addLog("Kitchen: Grabbing x10...", false)
+        for round = 1, 10 do
+            for _, ing in ipairs(ingredients) do
+                grabIngredient(ing.name)
+                task.wait(0.05)
+            end
+        end
+        refreshIngredientDisplay()
+        addLog("Kitchen: x10 grab complete!", false)
+    end)
+
+    -- Reset counts
+    createButton(invContent, "🗑  RESET INGREDIENT COUNTS", 4, function()
+        for _, ing in ipairs(ingredients) do ing.count = 0 end
+        saveKitchen(); refreshIngredientDisplay()
+        addLog("Kitchen: Ingredient counts reset", false)
+    end)
+
+    -- ============================================================================
+    -- SECTION 3: POTION RECIPES
+    -- ============================================================================
+    local potionContent = createKitchenCollapsible(page, "📖 POTION RECIPES", 3, false)
+
+    for i, recipe in ipairs(potionRecipes) do
+        local recipeFrame = Instance.new("Frame", potionContent)
+        recipeFrame.Size = UDim2.new(1, 0, 0, math.floor((isMobile and 70 or 58) * SF))
+        recipeFrame.LayoutOrder = i; recipeFrame.BackgroundColor3 = Colors.Gunmetal_Mid
+        recipeFrame.BackgroundTransparency = 0.3; recipeFrame.BorderSizePixel = 0
+        Instance.new("UICorner", recipeFrame).CornerRadius = UDim.new(0, math.floor(8 * SF))
+        Instance.new("UIStroke", recipeFrame).Color = Colors.Red_Dim
+
+        -- Recipe name
+        local rName = Instance.new("TextLabel", recipeFrame)
+        rName.Size = UDim2.new(0.6, 0, 0, math.floor(16 * SF))
+        rName.Position = UDim2.new(0, math.floor(8 * SF), 0, math.floor(4 * SF))
+        rName.Text = "⚗ " .. recipe.name; rName.TextColor3 = Colors.Red_Primary
+        rName.BackgroundTransparency = 1; rName.Font = Enum.Font.GothamBold
+        rName.TextSize = math.floor(10 * SF); rName.TextXAlignment = Enum.TextXAlignment.Left
+
+        -- Description
+        local rDesc = Instance.new("TextLabel", recipeFrame)
+        rDesc.Size = UDim2.new(1, -math.floor(16 * SF), 0, math.floor(12 * SF))
+        rDesc.Position = UDim2.new(0, math.floor(8 * SF), 0, math.floor(20 * SF))
+        rDesc.Text = recipe.description; rDesc.TextColor3 = Colors.Gunmetal_Accent
+        rDesc.BackgroundTransparency = 1; rDesc.Font = Enum.Font.Gotham
+        rDesc.TextSize = math.floor(8 * SF); rDesc.TextXAlignment = Enum.TextXAlignment.Left
+
+        -- Ingredients needed
+        local ingStr = ""
+        for j, req in ipairs(recipe.ingredients) do
+            ingStr = ingStr .. req[1] .. " x" .. req[2]
+            if j < #recipe.ingredients then ingStr = ingStr .. " + " end
+        end
+        local rIngs = Instance.new("TextLabel", recipeFrame)
+        rIngs.Size = UDim2.new(1, -math.floor(16 * SF), 0, math.floor(12 * SF))
+        rIngs.Position = UDim2.new(0, math.floor(8 * SF), 0, math.floor(34 * SF))
+        rIngs.Text = "Needs: " .. ingStr; rIngs.TextColor3 = Colors.Red_Dim
+        rIngs.BackgroundTransparency = 1; rIngs.Font = Enum.Font.Code
+        rIngs.TextSize = math.floor(7 * SF); rIngs.TextXAlignment = Enum.TextXAlignment.Left
+        rIngs.TextWrapped = true
+
+        -- Brew button
+        local brewBtnH = isMobile and math.floor(26 * SF) or math.floor(22 * SF)
+        local brewBtn = Instance.new("TextButton", recipeFrame)
+        brewBtn.Size = UDim2.new(0, math.floor(60 * SF), 0, brewBtnH)
+        brewBtn.Position = UDim2.new(1, -(math.floor(68 * SF)), 0, math.floor(4 * SF))
+        brewBtn.Text = "BREW"; brewBtn.TextColor3 = Colors.Red_Primary
+        brewBtn.BackgroundColor3 = Colors.Red_Deep; brewBtn.BackgroundTransparency = 0.3
+        brewBtn.Font = Enum.Font.GothamBold; brewBtn.TextSize = math.floor(9 * SF)
+        brewBtn.BorderSizePixel = 0
+        Instance.new("UICorner", brewBtn).CornerRadius = UDim.new(0, 4)
+
+        brewBtn.MouseButton1Click:Connect(function()
+            -- Check if we have enough
+            local canBrew = true
+            for _, req in ipairs(recipe.ingredients) do
+                local found = false
+                for _, ing in ipairs(ingredients) do
+                    if ing.name == req[1] then
+                        if ing.count < req[2] then canBrew = false end
+                        found = true; break
+                    end
+                end
+                if not found then canBrew = false end
+            end
+
+            if not canBrew then
+                addLog("Kitchen: Not enough ingredients for " .. recipe.name, true)
+                brewBtn.Text = "⚠ NEED"
+                brewBtn.TextColor3 = Colors.Red_Primary
+                task.delay(1.5, function() brewBtn.Text = "BREW"; brewBtn.TextColor3 = Colors.Red_Primary end)
+                return
+            end
+
+            -- Deduct ingredients
+            for _, req in ipairs(recipe.ingredients) do
+                for _, ing in ipairs(ingredients) do
+                    if ing.name == req[1] then
+                        ing.count = ing.count - req[2]
+                        break
+                    end
+                end
+            end
+            saveKitchen()
+            refreshIngredientDisplay()
+
+            -- Spawn cauldron (brew)
+            spawnCauldron()
+
+            brewBtn.Text = "✓ BREWED!"
+            brewBtn.BackgroundColor3 = Color3.fromRGB(0, 150, 60)
+            addLog("Kitchen: Brewed " .. recipe.name .. "!", false)
+
+            task.delay(2, function()
+                brewBtn.Text = "BREW"
+                brewBtn.BackgroundColor3 = Colors.Red_Deep
+            end)
+        end)
+
+        recipeFrame.MouseEnter:Connect(function()
+            TweenService:Create(recipeFrame, TweenInfo.new(0.1), {BackgroundTransparency = 0.15}):Play()
+        end)
+        recipeFrame.MouseLeave:Connect(function()
+            TweenService:Create(recipeFrame, TweenInfo.new(0.1), {BackgroundTransparency = 0.3}):Play()
+        end)
+    end
+
+    -- ============================================================================
+    -- SECTION 4: QUICK ACTIONS
+    -- ============================================================================
+    local quickContent = createKitchenCollapsible(page, "⚡ QUICK ACTIONS", 4, false)
+
+    createButton(quickContent, "⚗  EQUIP + CAULDRON (Full Setup)", 1, function()
+        addLog("Kitchen: Full setup...", false)
+        setupLabel.Text = "SETTING UP..."; setupDot.BackgroundColor3 = Colors.Red_Glow
+
+        equipAlchemist()
+        task.wait(0.5)
+        spawnCauldron()
+        task.wait(0.3)
+
+        alchemistEquipped = true; cauldronSpawned = true; kitchenVisible = true
+        setupLabel.Text = "KITCHEN: READY ✓"
+        setupLabel.TextColor3 = Colors.Red_Primary
+        setupDot.BackgroundColor3 = Color3.fromRGB(0, 200, 80)
+        addLog("Kitchen: Full setup complete!", false)
+    end)
+
+    createButton(quickContent, "🪄  SPAWN EXTRA CAULDRON", 2, function()
+        spawnCauldron()
+    end)
+
+    createButton(quickContent, "🔄  REFRESH INVENTORY", 3, function()
+        refreshIngredientDisplay()
+        addLog("Kitchen: Inventory refreshed", false)
+    end)
+
+    createButton(quickContent, "📊  INGREDIENT SUMMARY", 4, function()
+        addLog("=== INGREDIENT INVENTORY ===", true)
+        for _, ing in ipairs(ingredients) do
+            addLog("  " .. ing.name .. ": " .. ing.count .. " (+" .. ing.perGrab .. "/grab)", false)
+        end
+        addLog("===========================", true)
+    end)
+end
+
+-- ============================================================================
 -- TAB: TERMINAL
 -- ============================================================================
 do
