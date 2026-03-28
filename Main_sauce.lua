@@ -344,7 +344,7 @@ local tabBarLayout = Instance.new("UIListLayout", tabBar)
 tabBarLayout.FillDirection = Enum.FillDirection.Horizontal
 tabBarLayout.SortOrder = Enum.SortOrder.LayoutOrder
 
-local tabNames = {"Overall", "Morph", "Replicate", "Toggles", "Entities", "Media", "Debug", "Terminal"}
+local tabNames = {"Overall", "Morph", "Replicate", "Entities", "Media", "Casino", "Kitchen", "Debug", "Terminal"}
 local tabButtons = {}
 local tabPages = {}
 
